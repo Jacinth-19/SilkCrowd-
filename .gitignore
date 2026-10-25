@@ -1,0 +1,28 @@
+# CMake / Make
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.d
+*.spv
+
+# Android
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
+android/app/.cxx/
+android/app/src/main/assets/shaders/*.spv
+
+# Renders and CI artifacts
+artifacts/
+renders/*.png
+!docs/images/**
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
