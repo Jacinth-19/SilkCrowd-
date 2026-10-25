@@ -309,8 +309,25 @@ bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
             if (error) *error = "failed to create the compute-path draw pipeline";
             return false;
         }
+        // Depth-only twin: the same ribbons rasterised into the single-sampled shadow map.
+        // Without it the compute fallback (Adreno, Intel UHD 630) would cast no hair shadow.
+        VkShaderModule shadowFrag = loadShader("shadow.frag.spv", error);
+        if (shadowFrag == VK_NULL_HANDLE) return false;
+        stages[1].module = shadowFrag;
+        rendering.colorAttachmentCount = 0;
+        rendering.pColorAttachmentFormats = nullptr;
+        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+        blend.blendEnable = VK_FALSE;
+        depth.depthWriteEnable = VK_TRUE;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr,
+                                      &hairShadowDrawPipeline_) != VK_SUCCESS) {
+            if (error) *error = "failed to create the compute-path shadow pipeline";
+            return false;
+        }
         vkDestroyShaderModule(dev, vert, nullptr);
         vkDestroyShaderModule(dev, frag, nullptr);
+        vkDestroyShaderModule(dev, shadowFrag, nullptr);
     }
 
     // ---- head / teapot ----
@@ -396,7 +413,8 @@ bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
 void HairGpuRenderer::destroyMainPassPipelines() {
     VkDevice dev = ctx_->device();
     if (dev == VK_NULL_HANDLE) return;
-    VkPipeline* pipelines[] = {&hairMeshPipeline_, &hairDrawPipeline_, &headPipeline_};
+    VkPipeline* pipelines[] = {&hairMeshPipeline_, &hairDrawPipeline_, &hairShadowDrawPipeline_,
+                               &headPipeline_};
     for (VkPipeline* p : pipelines) {
         if (*p != VK_NULL_HANDLE) vkDestroyPipeline(dev, *p, nullptr);
         *p = VK_NULL_HANDLE;
@@ -1054,6 +1072,66 @@ bool HairGpuRenderer::prepareComputeWorkItems(const Camera& cam, const RenderOpt
     return true;
 }
 
+namespace {
+
+// The per-model push constants both the task/mesh path and the compute fallback consume.
+HairPush makeHairPush(const GpuHairModel& model, const RenderOptions& opt, bool shadowPass) {
+    HairPush push{};
+    push.chunksPerBundle = model.chunksPerBundle;
+    push.tasksPerChunk = 32;
+    push.frameIndex = 0;
+    push.flags = shadowPass ? 1u : 0u;
+    const StylingParams& sp = model.instance->styling;
+    push.shadeColor[0] = sp.color.x;
+    push.shadeColor[1] = sp.color.y;
+    push.shadeColor[2] = sp.color.z;
+    push.shadeColor[3] = sp.melanin;
+    push.shadeParams[0] = sp.melanin;
+    push.shadeParams[1] = sp.redness;
+    push.shadeParams[2] = opt.enableLod ? 0.6f : 0.0f;   // dual scattering for thick LOD strands
+    push.shadeParams[3] = 0.0f;
+    push.shadeParams2[0] = opt.hairAlpha;
+    push.shadeParams2[1] = opt.drawShadows ? 1.0f : 0.0f;
+    push.shadeParams2[2] = 1.0f;
+    push.shadeParams2[3] = 0.5f;
+    return push;
+}
+
+}  // namespace
+
+// Section 3.2, "Option A": the compute fallback generates every ribbon with one dispatch
+// per hair model. Dispatches cannot be recorded inside a render pass instance, so this runs
+// once per frame before the shadow and colour passes, and both of them then rasterise the
+// same storage-buffer output with the vertex-path pipelines.
+void HairGpuRenderer::recordComputeFallback(VkCommandBuffer cmd, const RenderOptions& opt) {
+    if (hasMeshShaders_ || hairComputePipeline_ == VK_NULL_HANDLE) return;
+    if (computeWorkItems_ == 0) return;
+    bool dispatched = false;
+    for (auto& model : models_) {
+        if (model.descriptorSets[0] == VK_NULL_HANDLE || !model.instance) continue;
+        const VkDescriptorSet sets[5] = {frameDescriptorSet_, model.descriptorSets[0],
+                                         model.descriptorSets[1], sampleDescriptorSet_,
+                                         model.descriptorSets[2]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hairPipelineLayout_, 0, 5,
+                                sets, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hairComputePipeline_);
+        HairPush push = makeHairPush(model, opt, false);
+        vkCmdPushConstants(cmd, hairPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(HairPush), &push);
+        vkCmdDispatch(cmd, (computeWorkItems_ + 31) / 32, 1, 1);
+        dispatched = true;
+    }
+    if (!dispatched) return;
+    // Make the generated ribbons visible to the vertex-input/vertex stages of both passes.
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
+                            VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+}
+
 void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
                                      const RenderOptions& opt, bool shadowPass) {
     const uint32_t renderW = width_, renderH = height_;
@@ -1068,24 +1146,7 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
         const HairInstance& inst = *model.instance;
         if (model.descriptorSets[0] == VK_NULL_HANDLE) continue;
 
-        HairPush push{};
-        push.chunksPerBundle = model.chunksPerBundle;
-        push.tasksPerChunk = 32;
-        push.frameIndex = 0;
-        push.flags = shadowPass ? 1u : 0u;
-        const StylingParams& sp = inst.styling;
-        push.shadeColor[0] = sp.color.x;
-        push.shadeColor[1] = sp.color.y;
-        push.shadeColor[2] = sp.color.z;
-        push.shadeColor[3] = sp.melanin;
-        push.shadeParams[0] = sp.melanin;
-        push.shadeParams[1] = sp.redness;
-        push.shadeParams[2] = opt.enableLod ? 0.6f : 0.0f;  // dual scattering for thick LOD strands
-        push.shadeParams[3] = 0.0f;
-        push.shadeParams2[0] = opt.hairAlpha;
-        push.shadeParams2[1] = opt.drawShadows ? 1.0f : 0.0f;
-        push.shadeParams2[2] = 1.0f;
-        push.shadeParams2[3] = 0.5f;
+        const HairPush push = makeHairPush(model, opt, shadowPass);
 
         // set 0 frame, 1 model, 2 bundle table, 3 sample/output, 4 the five textures
         const VkDescriptorSet sets[5] = {frameDescriptorSet_,   model.descriptorSets[0],
@@ -1093,9 +1154,6 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
                                          model.descriptorSets[2]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, hairPipelineLayout_, 0, 5,
                                 sets, 0, nullptr);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hairPipelineLayout_, 0, 5,
-                                sets, 0, nullptr);
-
         if (hasMeshShaders_ && hairMeshPipeline_ != VK_NULL_HANDLE) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               shadowPass ? shadowHairPipeline_ : hairMeshPipeline_);
@@ -1105,23 +1163,12 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
                                0, sizeof(HairPush), &push);
             vkCmdDrawMeshTasksEXT(cmd, model.numFaces * model.chunksPerBundle, 1, 1);
         } else {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hairComputePipeline_);
-            vkCmdPushConstants(cmd, hairPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(HairPush), &push);
-            if (computeWorkItems_ > 0) {
-                vkCmdDispatch(cmd, (computeWorkItems_ + 31) / 32, 1, 1);
-                // Make the generated ribbons visible to the vertex stage, then rasterise
-                // them exactly as the mesh path does (Section 3.2).
-                VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-                barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
-                                        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                     VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
-                                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-                                     0, 1, &barrier, 0, nullptr, 0, nullptr);
-                if (!shadowPass && hairDrawPipeline_ != VK_NULL_HANDLE) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, hairDrawPipeline_);
+            // The ribbons were generated by recordComputeFallback() before either pass; the
+            // vertex path only has to rasterise them, exactly as the mesh path does.
+            if (computeIndexCount_ > 0) {
+                VkPipeline drawPipeline = shadowPass ? hairShadowDrawPipeline_ : hairDrawPipeline_;
+                if (drawPipeline != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline);
                     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             drawPipelineLayout_, 0, 5, sets, 0, nullptr);
                     struct DrawPush {
@@ -1130,7 +1177,10 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
                         float params[4];
                         float params2[4];
                     } dp{};
-                    copyMat(cam.proj() * cam.view() * inst.transform, dp.mvp);
+                    // The shadow pass needs the light's orthographic matrix instead.
+                    const Mat4 frameViewProj =
+                        shadowPass ? lightViewProj_ : cam.proj() * cam.view();
+                    copyMat(frameViewProj * inst.transform, dp.mvp);
                     copyMat(inst.transform, dp.model);
                     vkCmdPushConstants(cmd, drawPipelineLayout_,
                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1290,6 +1340,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
                          Mat4::lookAt(normalize(sunDir) * (sceneRadius * 2.0f), Vec3(0, 0, 0),
                                       Vec3(0, 1, 0));
     copyMat(lightVP, light.lightViewProj);
+    lightViewProj_ = lightVP;
     light.shadowParams[0] = 1.0f / 2048.0f;
     light.shadowParams[1] = 0.0015f;
     light.shadowParams[2] = 1.5f;
@@ -1338,6 +1389,11 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(commandBuffer_, &bi);
 
+    // ---- compute fallback: generate the ribbons once, outside any render pass instance
+    // (a compute dispatch may not be recorded inside one); the shadow pass and the colour
+    // pass then rasterise the same buffers. ----
+    if (options.drawHair) recordComputeFallback(commandBuffer_, options);
+
     // ---- shadow pass ----
     {
         ctx_->imageLayoutTransition(commandBuffer_, shadowImage_,
@@ -1355,7 +1411,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         ri.layerCount = 1;
         ri.pDepthAttachment = &depth;
         vkCmdBeginRendering(commandBuffer_, &ri);
-        if (options.drawShadows) recordShadowPass(commandBuffer_, camera);
+        if (options.drawShadows && options.drawHair) recordShadowPass(commandBuffer_, camera);
         vkCmdEndRendering(commandBuffer_);
         ctx_->imageLayoutTransition(commandBuffer_, shadowImage_,
                                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,

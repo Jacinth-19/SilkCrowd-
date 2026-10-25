@@ -150,6 +150,7 @@ private:
                             const std::vector<float>& bundleLength,
                             const std::vector<uint32_t>& strandCounts, uint32_t seed);
     bool uploadStaticMeshes();
+    void recordComputeFallback(VkCommandBuffer cmd, const RenderOptions& opt);
     void recordHairDraw(VkCommandBuffer cmd, const Camera& cam, const RenderOptions& opt,
                         bool shadowPass);
     void recordShadowPass(VkCommandBuffer cmd, const Camera& cam);
@@ -191,6 +192,7 @@ private:
     VkPipeline hairMeshPipeline_ = VK_NULL_HANDLE;
     VkPipeline hairComputePipeline_ = VK_NULL_HANDLE;
     VkPipeline hairDrawPipeline_ = VK_NULL_HANDLE;     // vertex path for the compute output
+    VkPipeline hairShadowDrawPipeline_ = VK_NULL_HANDLE;  // depth-only variant of the above
     VkPipeline shadowHairPipeline_ = VK_NULL_HANDLE;
     VkPipeline headPipeline_ = VK_NULL_HANDLE;
     VkPipeline compositePipeline_ = VK_NULL_HANDLE;      // BGRA8 (swapchain)
@@ -211,6 +213,7 @@ private:
     bool taaEnabled_ = true;
     bool taaHistoryValid_ = false;
     uint32_t frameCounter_ = 0;
+    Mat4 lightViewProj_;   // the shadow pass's orthographic light matrix
     float prevViewProj_[16] = {0};
     float currentInvViewProj_[16] = {0};
     float currentViewProj_[16] = {0};

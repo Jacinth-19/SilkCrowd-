@@ -131,6 +131,12 @@ positions *and* tangents, because morphing only positions makes the shading flic
   buffers are sized for the frame's maximum `ns`, so a single uniform stride works for every
   strand.
 
+  The dispatch itself is recorded by `recordComputeFallback()` *before* the shadow and colour
+  passes: a compute dispatch may not be recorded inside a render pass instance. Both passes then
+  consume the same buffers, and the shadow pass uses a depth-only twin of the vertex pipeline
+  (`hairShadowDrawPipeline_`, `hair_draw.vert` + `shadow.frag`, light orthographic matrix) so the
+  fallback casts hair shadows on Adreno / Intel UHD 630 just like the mesh path.
+
 ## 8. Shading and image-based lighting
 
 The single-scattering term is the Marschner BCSDF, evaluated per fibre in `shaders/hair.frag`:
