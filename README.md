@@ -89,7 +89,8 @@ software reference rasteriser so the numbers can be checked without a GPU.
 
 ```text
 $ ./build/SilkCrowd --assets
-  assets/hairmeshes/crowd/00_long_straight.skhm     63 verts   14.32 KB (fp16 textures)
+  assets/hairmeshes/crowd/04_bob.skhm               48 verts   14.15 KB (fp16 textures)
+  assets/hairmeshes/crowd/05_ponytail.skhm          63 verts   19.23 KB (fp16 textures)
   ...
 crowd presets: 166.1 KB total, 14-19 KB per model (Figure 1 reports 13-21 KB)
 ```
@@ -144,6 +145,20 @@ paper, 100 heads, LOD off  |#############################################| 47 ms
 crowd storage (paper)      |###                                          | 1.7 MB
 crowd storage (here)       |###                                          | 1.61 MB
 ```
+
+### The workloads, rendered
+
+![Crowd of 100 heads](docs/images/crowd_100_linux.png)
+*Figure 1: 100 unique heads, unique styles, unique parameters, one texture set each (800x460,
+software rasteriser).*
+
+![200 teapots](docs/images/teapot_200_linux.png)
+*Figure 9: 200 teapots, 50k strands each, one hair mesh per teapot.*
+
+![The ten hairstyles of Figure 10](docs/images/styles.png)
+*The ten Figure 10 styles, rendered by `tools/make_styles_grid.py` from this checkout.*
+
+![Curly style close-up](docs/images/head_curly_linux.png)
 
 ## Validation suite
 
