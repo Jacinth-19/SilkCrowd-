@@ -152,7 +152,7 @@ StylingFrames computeFramesFiniteDifference(const HairMesh& mesh) {
             const Vec3 du = ((p1 - p0) + (p2 - p3)) * 0.5f;
             const Vec3 dv = ((p3 - p0) + (p2 - p1)) * 0.5f;
             const Vec3 u = normalize(du);
-            const Vec3 v = normalize(dv - u * dot(dv, u));
+            (void)dv;
             for (uint32_t c = 0; c < f.count; ++c) {
                 const size_t key = static_cast<size_t>(layer) * mesh.numVertices() + f.v[c];
                 accU[key] += u;

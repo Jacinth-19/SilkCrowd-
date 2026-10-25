@@ -136,7 +136,6 @@ bool VulkanContext::init(VkInstance instance, VkSurfaceKHR surface, bool enableV
 
     VkPhysicalDevice best = VK_NULL_HANDLE;
     int bestScore = -1;
-    bool bestMesh = false;
     for (VkPhysicalDevice dev : devices) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev, &props);
@@ -183,7 +182,6 @@ bool VulkanContext::init(VkInstance instance, VkSurfaceKHR surface, bool enableV
         if (score > bestScore) {
             bestScore = score;
             best = dev;
-            bestMesh = mesh;
             graphicsFamily_ = gfx;
             presentFamily_ = present;
             physical_ = dev;

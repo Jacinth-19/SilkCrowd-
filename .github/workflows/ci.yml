@@ -32,7 +32,8 @@ jobs:
             libvulkan-dev vulkan-tools mesa-vulkan-drivers \
             glslang-tools qt6-base-dev libqt6opengl6-dev
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        # -DSILKCROWD_STRICT=ON turns -Wall -Wextra into -Werror for every target.
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON
       - name: Build
         run: cmake --build build -j
       - name: Validation suite

@@ -42,9 +42,6 @@ add_library(silkcrowd_core STATIC
 )
 target_include_directories(silkcrowd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(silkcrowd_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
-if(SILKCROWD_STRICT)
-  target_compile_options(silkcrowd_core PRIVATE -Werror)
-endif()
 # Threads make the crowd passes scale with the core count.
 find_package(Threads QUIET)
 if(Threads_FOUND)
@@ -113,11 +110,13 @@ if(Vulkan_FOUND)
     src/gpu/hair_gpu_renderer.cpp)
   target_link_libraries(silkcrowd_gpu PUBLIC silkcrowd_core Vulkan::Vulkan)
   target_include_directories(silkcrowd_gpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_options(silkcrowd_gpu PRIVATE -Wall -Wextra -Wno-unused-parameter
+                          -Wno-missing-field-initializers)
   target_compile_definitions(silkcrowd_gpu PUBLIC
     SILKCROWD_WITH_VULKAN=1
     SILKCROWD_SHADER_DIR="${SILKCROWD_SHADER_OUT}")
   if(TARGET silkcrowd_shaders)
-    add_dependencies(silkcrowd_gpu silkrowd_shaders)
+    add_dependencies(silkcrowd_gpu silkcrowd_shaders)
   endif()
   set(SILKCROWD_GPU_SOURCES silkcrowd_gpu)
 endif()
@@ -148,7 +147,7 @@ add_executable(SilkCrowd
   src/app/scenes.cpp
   src/app/gpu_app.cpp
   ${SILKCROWD_QT_SOURCES})
-target_link_libraries(SilkCrowd PRIVATE silkrowd_core)
+target_link_libraries(SilkCrowd PRIVATE silkcrowd_core)
 if(SILKCROWD_GPU_SOURCES)
   set_target_properties(SilkCrowd PROPERTIES CXX_STANDARD 17)
   target_link_libraries(SilkCrowd PRIVATE ${SILKCROWD_GPU_SOURCES})
@@ -169,8 +168,8 @@ add_custom_command(TARGET SilkCrowd POST_BUILD
 
 if(SILKCROWD_BUILD_TESTS)
   add_executable(silkcrowd_tests tests/tests.cpp)
-  target_link_libraries(silkcrowd_tests PRIVATE silkrowd_core)
-  add_test(NAME unit_tests COMMAND silkrowd_tests)
+  target_link_libraries(silkcrowd_tests PRIVATE silkcrowd_core)
+  add_test(NAME unit_tests COMMAND silkcrowd_tests)
   add_test(NAME validation COMMAND SilkCrowd --validate)
   enable_testing()
 endif()
@@ -178,3 +177,17 @@ endif()
 install(TARGETS SilkCrowd RUNTIME DESTINATION bin)
 install(DIRECTORY ${SILKCROWD_SHADER_OUT}/ DESTINATION bin/shaders)
 install(DIRECTORY assets/ DESTINATION bin/assets)
+
+# -----------------------------------------------------------------------------
+#  Warnings: every target is held to -Wall -Wextra. -DSILKCROWD_STRICT=ON makes
+#  that a hard gate (CI builds with it), so a warning can never ship silently.
+# -----------------------------------------------------------------------------
+set(SILKCROWD_WARNING_TARGETS SilkCrowd silkcrowd_core silkcrowd_gpu silkcrowd_tests)
+foreach(tgt IN LISTS SILKCROWD_WARNING_TARGETS)
+  if(TARGET ${tgt})
+    target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    if(SILKCROWD_STRICT)
+      target_compile_options(${tgt} PRIVATE -Werror)
+    endif()
+  endif()
+endforeach()

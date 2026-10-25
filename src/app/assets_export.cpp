@@ -14,12 +14,6 @@
 namespace silk {
 namespace {
 
-void appendFloats(std::vector<uint8_t>& out, const std::vector<float>& v) {
-    const size_t off = out.size();
-    out.resize(off + v.size() * sizeof(float));
-    std::memcpy(out.data() + off, v.data(), v.size() * sizeof(float));
-}
-
 // float32 -> IEEE 754 binary16 (the storage format of Table 1; it is what keeps a whole
 // hair model's five textures in the 13-21 KB range of Figure 1).
 uint16_t toHalf(float f) {
@@ -58,16 +52,6 @@ void appendVec3(std::vector<uint8_t>& out, const std::vector<Vec3>& v) {
         p[i * 3 + 0] = v[i].x;
         p[i * 3 + 1] = v[i].y;
         p[i * 3 + 2] = v[i].z;
-    }
-}
-
-void appendVec2(std::vector<uint8_t>& out, const std::vector<Vec2>& v) {
-    const size_t off = out.size();
-    out.resize(off + v.size() * sizeof(float) * 2);
-    float* p = reinterpret_cast<float*>(out.data() + off);
-    for (size_t i = 0; i < v.size(); ++i) {
-        p[i * 2 + 0] = v[i].x;
-        p[i * 2 + 1] = v[i].y;
     }
 }
 
