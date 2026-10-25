@@ -72,7 +72,7 @@ void printHelp() {
         "  --validate            run the paper validation suite (Figure 3e, Eq. 1-12)\n"
         "  --bench               benchmark generation + rasterisation, report workloads\n"
         "  --screenshot <file>   render one frame to a PNG\n"
-        "  --assets              write assets/heads/*.gltf and assets/hairmeshes/*.bin\n"
+        "  --assets              write assets/heads/*.gltf and assets/hairmeshes/*.skhm\n"
         "  --interactive         launch the Qt6 editor (requires a build with Qt6)\n\n"
         "Options:\n"
         "  --scene head|crowd|teapot   scene to render (default head)\n"
@@ -95,7 +95,7 @@ void printHelp() {
         "  --software / --cpu          force the dependency-free software rasteriser\n"
         "  --compute                   force the compute-shader fallback (Adreno/UHD path)\n"
         "  --msaa N                    1, 2, 4 or 8 (Vulkan path)\n"
-        "  --wind F                    wind strength in m/s^2 (simulation)\n");
+        "  --wind F                    wind speed in m/s (simulation)\n");
 }
 
 Args parseArgs(int argc, char** argv) {

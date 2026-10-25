@@ -142,7 +142,12 @@ endif()
 # -----------------------------------------------------------------------------
 #  Executables
 # -----------------------------------------------------------------------------
-add_executable(SilkCrowd src/app/main.cpp src/app/assets_export.cpp ${SILKCROWD_QT_SOURCES})
+add_executable(SilkCrowd
+  src/app/main.cpp
+  src/app/assets_export.cpp
+  src/app/scenes.cpp
+  src/app/gpu_app.cpp
+  ${SILKCROWD_QT_SOURCES})
 target_link_libraries(SilkCrowd PRIVATE silkrowd_core)
 if(SILKCROWD_GPU_SOURCES)
   set_target_properties(SilkCrowd PROPERTIES CXX_STANDARD 17)
