@@ -257,7 +257,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
 | Shaders | `glslang` (SPIR-V) | 10/13 compile; `hair.task`, `hair.mesh` need `glslc` |
 | Android entry point | `g++ -fsyntax-only` against stubbed NDK headers | 0 warnings, 0 errors |
-| Qt6 editor | `src/app/qt_app.cpp` | **not built here** - no Qt6 in this environment |
+| Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 
 ## Repository layout
 

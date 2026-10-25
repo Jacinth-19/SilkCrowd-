@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QAction>
@@ -161,13 +162,18 @@ public:
     void preInitResources() override {}
     void initResources() override;
     void initSwapChainResources() override;
-    void releaseSwapChainResources() override {}
+    void releaseSwapChainResources() override;
     void releaseResources() override;
     void startNextFrame() override;
 
     void rebuildScene(int sceneIndex);
 
 private:
+    // The composite pass writes through an externally supplied VkImageView, and the
+    // swapchain hands out a different VkImage every frame, so views are cached per image.
+    VkImageView swapchainView(VkImage image);
+    std::vector<std::pair<VkImage, VkImageView>> swapchainViews_;
+
     HairVulkanWindow* window_;
     VulkanContext context_;
     std::unique_ptr<HairGpuRenderer> renderer_;
@@ -227,8 +233,33 @@ void HairVulkanRenderer::rebuildScene(int sceneIndex) {
 void HairVulkanRenderer::initSwapChainResources() {
     if (!renderer_) return;
     // The swapchain images are created after initResources(); remember the format so the
-    // composite pass writes into a compatible pipeline.
+    // composite pass writes into a compatible pipeline. The per-image view is supplied
+    // every frame by swapchainView().
     renderer_->setCompositeTarget(VK_NULL_HANDLE, window_->colorFormat());
+}
+
+void HairVulkanRenderer::releaseSwapChainResources() {
+    for (auto& entry : swapchainViews_)
+        if (entry.second != VK_NULL_HANDLE)
+            vkDestroyImageView(context_.device(), entry.second, nullptr);
+    swapchainViews_.clear();
+}
+
+VkImageView HairVulkanRenderer::swapchainView(VkImage image) {
+    for (const auto& entry : swapchainViews_)
+        if (entry.first == image) return entry.second;
+    VkImageView view = VK_NULL_HANDLE;
+    VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    ci.image = image;
+    ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    ci.format = window_->colorFormat();
+    ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(context_.device(), &ci, nullptr, &view) != VK_SUCCESS) {
+        std::fprintf(stderr, "[SilkCrowd] could not create a view for the swapchain image\n");
+        return VK_NULL_HANDLE;
+    }
+    swapchainViews_.emplace_back(image, view);
+    return view;
 }
 
 void HairVulkanRenderer::releaseResources() {
@@ -280,8 +311,10 @@ void HairVulkanRenderer::startNextFrame() {
     options.exposure = st->exposure;
     renderer_->applyHardwarePolicy(context_.info(), &options);
 
-    renderer_->renderToSwapchainImage(window_->currentSwapChainImage(), window_->width(),
-                                      window_->height(), camera, options);
+    const VkImage swapchainImage = window_->currentSwapChainImage();
+    renderer_->setCompositeTarget(swapchainView(swapchainImage), window_->colorFormat());
+    renderer_->renderToSwapchainImage(swapchainImage, window_->width(), window_->height(),
+                                      camera, options);
 
     lastMs_ = static_cast<double>(timer_.nsecsElapsed()) / 1.0e6;
     timer_.restart();
@@ -540,7 +573,8 @@ private:
                 .arg(QString::fromStdString(s->deviceName))
                 .arg(QString::fromStdString(s->warning));
         overlay_->setText(text);
-        statsLabel_->setText(text.replace("\n", "<br>"));
+        QString html = text;                       // QString::replace() mutates
+        statsLabel_->setText(html.replace("\n", "<br>"));
     }
 
     EditorState state_;
