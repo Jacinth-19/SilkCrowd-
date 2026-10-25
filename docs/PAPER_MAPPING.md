@@ -154,6 +154,6 @@ reports sag-free drift (`0.0005 m` versus `0.0091 m`) and the monotone wind resp
 | per-model texture storage | 13-21 KB | 14.1-19.1 KB (`--assets`, crowd presets) |
 | 100-model total | 1.7 MB | 1.61 MB (`--scene crowd --crowd 100 --bench`) |
 | 200 teapots x 50k | 3.2 MB | 1.53 MB (6x5 root grid on our teapots) |
-| strands rendered with LOD | depends on R and distance | 14.2 %-44.2 % (crowd at 480x300 / 640x400) |
-| triangles, crowd | 100+ M | 90.5 M at 480x300, 145.8 M at 640x400 |
+| strands rendered with LOD | depends on R and distance | 6.9 %-51.5 % (crowd at 480x300 ... hero head) |
+| triangles, crowd | 100+ M | 40.3 M at 480x300, 67.4 M at 800x460 |
 | no-LOD slowdown | ~24x (47 ms vs 2 ms) | workload reproduced by `--no-lod` |

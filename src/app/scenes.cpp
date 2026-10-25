@@ -45,15 +45,11 @@ HairStyleSpec crowdStyleSpec(int i, uint32_t seed) {
 Scene buildCrowdScene(int count) {
     Scene scene;
     HeadModel head;
+    // One shared head/body mesh, drawn once per crowd instance (see the renderers), so that
+    // every character in Figure 1's crowd has a face under its own hairstyle.
     scene.head = head.headMesh();
     scene.body = head.bodyMesh();
-    scene.head.positions.clear();
-    scene.head.indices.clear();
-    scene.body.positions.clear();
-    scene.body.normals.clear();
-    scene.body.indices.clear();
-    scene.head.normals.clear();
-    scene.head.uvs.clear();
+    scene.eyes = head.eyesMesh();
 
     const int cols = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count))));
     const float spacing = 0.56f;
@@ -83,7 +79,9 @@ Scene buildTeapotScene(int count) {
         const int cx = i % cols, cy = i / cols;
         const float x = (cx - (cols - 1) * 0.5f) * spacing;
         const float z = (cy - (cols - 1) * 0.5f) * spacing;
-        HairMesh mesh = buildTeapotHairMesh(6, 5, 3, 0.06f + 0.02f * (i % 3), 900u + i);
+        // Figure 9: each teapot grows a short hair layer on its lid (about a third of the
+        // pot's height), so the body stays readable at crowd distance.
+        HairMesh mesh = buildTeapotHairMesh(6, 5, 3, 0.030f + 0.010f * (i % 3), 900u + i);
         StylingParams sp = StylingParams::fromPreset(i % 10, 900u + i);
         auto inst = makeHairInstance(mesh, sp, 900u + i, TexelFormat::Float16);
         inst->transform = Mat4::translate(Vec3(x, 0.0f, z)) * Mat4::rotateY(0.4f * i);
@@ -104,21 +102,24 @@ Camera headCamera(int width, int height, float fovYDeg) {
 }
 
 Camera crowdCamera(int width, int height) {
+    // Frames the whole 10x10 crowd of Figure 1 (spacing 0.56 m) from slightly above eye
+    // level, so the grid reads as a crowd rather than a row of heads.
     Camera c;
-    c.fovY = deg2rad(38.0f);
+    c.fovY = deg2rad(42.0f);
     c.aspect = static_cast<float>(width) / static_cast<float>(height);
-    c.position = Vec3(0.0f, 1.35f, 3.4f);
-    c.target = Vec3(0.0f, 0.55f, 0.0f);
+    c.position = Vec3(0.0f, 2.55f, 6.10f);
+    c.target = Vec3(0.0f, 0.42f, 0.0f);
     c.nearZ = 0.05f;
     return c;
 }
 
 Camera teapotCamera(int width, int height) {
+    // 200 teapots on a 15x14 grid with 0.30 m spacing (Figure 9).
     Camera c;
-    c.fovY = deg2rad(38.0f);
+    c.fovY = deg2rad(40.0f);
     c.aspect = static_cast<float>(width) / static_cast<float>(height);
-    c.position = Vec3(0.0f, 0.75f, 1.85f);
-    c.target = Vec3(0.0f, 0.30f, 0.0f);
+    c.position = Vec3(0.0f, 1.85f, 4.30f);
+    c.target = Vec3(0.0f, 0.22f, 0.0f);
     c.nearZ = 0.05f;
     return c;
 }

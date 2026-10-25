@@ -215,14 +215,16 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
 
     // ---------------- opaque geometry ----------------
     auto drawMesh = [&](const Mesh& mesh, Vec3 baseAlbedo, float specPower, float specGain,
-                        bool isSkin, bool isEye = false) {
+                        bool isSkin, bool isEye = false, const Mat4* xform = nullptr) {
         for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
             Vec3 p[3], n[3];
             Projected pr[3];
             for (int k = 0; k < 3; ++k) {
                 const uint32_t idx = mesh.indices[t + k];
-                p[k] = mesh.positions[idx];
-                n[k] = mesh.normals.empty() ? Vec3(0, 1, 0) : mesh.normals[idx];
+                const Vec3 lp = mesh.positions[idx];
+                const Vec3 ln = mesh.normals.empty() ? Vec3(0, 1, 0) : mesh.normals[idx];
+                p[k] = xform ? xform->transformPoint(lp) : lp;
+                n[k] = xform ? normalize(xform->transformDirection(ln)) : ln;
                 project(p[k], &pr[k]);
             }
             if (!pr[0].visible && !pr[1].visible && !pr[2].visible) continue;
@@ -287,11 +289,34 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
     };
 
     if (options.drawHead) {
-        drawMesh(scene.head, Vec3(0.66f, 0.47f, 0.39f), 26.0f, 0.08f, true);
-        drawMesh(scene.body, Vec3(0.56f, 0.41f, 0.34f), 26.0f, 0.08f, true);
-        drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, /*isEye=*/true);
+        // A crowd draws one head/body per hair instance, using that instance's transform
+        // (every model is unique, exactly as in Figure 1). A single character uses the
+        // mesh as-is.
+        if (scene.hair.size() > 1 && !scene.head.positions.empty()) {
+            for (const auto& inst : scene.hair) {
+                drawMesh(scene.head, Vec3(0.66f, 0.47f, 0.39f), 26.0f, 0.08f, true, false,
+                         &inst->transform);
+                drawMesh(scene.body, Vec3(0.56f, 0.41f, 0.34f), 26.0f, 0.08f, true, false,
+                         &inst->transform);
+                drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, true,
+                         &inst->transform);
+            }
+        } else {
+            drawMesh(scene.head, Vec3(0.66f, 0.47f, 0.39f), 26.0f, 0.08f, true);
+            drawMesh(scene.body, Vec3(0.56f, 0.41f, 0.34f), 26.0f, 0.08f, true);
+            drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, /*isEye=*/true);
+        }
     }
-    if (scene.useTeapots) drawMesh(scene.teapot, Vec3(0.86f, 0.84f, 0.80f), 90.0f, 0.45f, false);
+    if (scene.useTeapots) {
+        // Figure 9: one teapot per hair instance, each under its own hair layer.
+        if (scene.hair.size() > 1 && !scene.teapot.positions.empty()) {
+            for (const auto& inst : scene.hair)
+                drawMesh(scene.teapot, Vec3(0.86f, 0.84f, 0.80f), 90.0f, 0.45f, false, false,
+                         &inst->transform);
+        } else {
+            drawMesh(scene.teapot, Vec3(0.86f, 0.84f, 0.80f), 90.0f, 0.45f, false);
+        }
+    }
 
     // Freeze the opaque depth buffer. Hair is then blended back-to-front *without*
     // writing depth, so that the many transparent layers of a hairstyle accumulate

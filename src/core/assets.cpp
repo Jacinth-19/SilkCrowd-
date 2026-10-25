@@ -346,8 +346,9 @@ HairMesh buildTeapotHairMesh(int gridU, int gridV, int numLayers, float length, 
     mesh.setTopology(numVerts, static_cast<uint32_t>(numLayers), faces, uv);
     mesh.setLayerW(defaultLayerW(static_cast<uint32_t>(numLayers)));
 
-    // A dome on top of the teapot.
-    const Vec3 center(0.0f, 0.105f, 0.0f);
+    // A cap on the teapot's lid: the hair mesh hugs the lid (radius 0.058 on a 0.062 lid),
+    // so the pot's body, spout and handle stay visible, which is what Figure 9 shows.
+    const Vec3 center(0.0f, 0.112f, 0.0f);
     for (int j = 0; j < nv; ++j) {
         const float v = static_cast<float>(j) / (nv - 1);
         for (int i = 0; i < nu; ++i) {
@@ -356,12 +357,13 @@ HairMesh buildTeapotHairMesh(int gridU, int gridV, int numLayers, float length, 
             const float ph = 0.25f + (1.45f - 0.25f) * v;
             const Vec3 n(std::sin(ph) * std::cos(th), std::cos(ph), std::sin(ph) * std::sin(th));
             const size_t idx = static_cast<size_t>(j * nu + i);
-            mesh.layerVertexMutable(0, static_cast<uint32_t>(idx)) = center + n * 0.085f;
+            mesh.layerVertexMutable(0, static_cast<uint32_t>(idx)) = center + n * 0.058f;
             for (int l = 1; l < numLayers; ++l) {
                 const float s = static_cast<float>(l) / (numLayers - 1);
                 const Vec3 dir = normalize(bendDown(n, 0.75f * std::pow(s, 0.8f)));
                 mesh.layerVertexMutable(static_cast<uint32_t>(l), static_cast<uint32_t>(idx)) =
-                    center + n * 0.085f + dir * (length * std::pow(s, 0.95f)) + n * (0.012f * s);
+                    center + n * 0.058f + dir * (length * std::pow(s, 0.95f)) +
+                    n * (0.006f * s);   // modest outward puff, so the pot stays visible
             }
         }
     }

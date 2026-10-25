@@ -1322,8 +1322,48 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
             vkCmdBindIndexBuffer(commandBuffer_, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(commandBuffer_, mesh.indexCount, 1, 0, 0, 0);
         };
-        drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), 0.0f);
-        drawMesh(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f);
+        // A crowd draws the shared head/body mesh once per hair instance, with that
+        // instance's transform; a single character draws it with the identity transform.
+        auto drawMeshXf = [&](const StaticMeshGpu& mesh, VkBuffer indexBuffer, Vec3 albedo,
+                              float spec, const Mat4& xform) {
+            if (mesh.indexCount == 0) return;
+            HeadPush push{};
+            copyMat(viewProj * xform, push.mvp);
+            copyMat(xform, push.model);
+            push.albedo[0] = albedo.x;
+            push.albedo[1] = albedo.y;
+            push.albedo[2] = albedo.z;
+            push.albedo[3] = spec;
+            vkCmdPushConstants(commandBuffer_, headPipelineLayout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(HeadPush), &push);
+            vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &mesh.buffer, zeroOffsets);
+            vkCmdBindIndexBuffer(commandBuffer_, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(commandBuffer_, mesh.indexCount, 1, 0, 0, 0);
+        };
+        if (models_.size() > 1) {
+            for (const auto& model : models_) {
+                if (!model.instance) continue;
+                drawMeshXf(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), 0.0f,
+                           model.instance->transform);
+                drawMeshXf(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f,
+                           model.instance->transform);
+            }
+        } else {
+            drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), 0.0f);
+            drawMesh(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f);
+        }
+        // Figure 9: the teapot under each hair layer.
+        if (teapotMesh_.indexCount > 0) {
+            if (models_.size() > 1) {
+                for (const auto& model : models_)
+                    if (model.instance)
+                        drawMeshXf(teapotMesh_, teapotMeshIndex_.buffer,
+                                   Vec3(0.86f, 0.84f, 0.80f), 0.0f, model.instance->transform);
+            } else {
+                drawMesh(teapotMesh_, teapotMeshIndex_.buffer, Vec3(0.86f, 0.84f, 0.80f), 0.0f);
+            }
+        }
     }
 
     if (options.drawHair) recordHairDraw(commandBuffer_, camera, options, false);

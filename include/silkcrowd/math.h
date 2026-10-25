@@ -190,6 +190,14 @@ struct Mat4 {
         transformPoint(p, &xyz, &w);
         return w != 1.0f && w != 0.0f ? xyz * (1.0f / w) : xyz;
     }
+
+    // Direction transform (ignores the translation column).  Correct for the rigid +
+    // uniform-scale transforms used by the crowd instances.
+    Vec3 transformDirection(Vec3 d) const {
+        return Vec3(m[0][0] * d.x + m[0][1] * d.y + m[0][2] * d.z,
+                    m[1][0] * d.x + m[1][1] * d.y + m[1][2] * d.z,
+                    m[2][0] * d.x + m[2][1] * d.y + m[2][2] * d.z);
+    }
 };
 
 // --- small deterministic hashing / RNG (no <random> dependency on GPU parity) ---

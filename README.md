@@ -118,15 +118,17 @@ devices (see the per-platform table at the end).
 | Workload | Strands defined | Strands rendered with LOD | Triangles | Texture storage |
 | --- | --- | --- | --- | --- |
 | Hero head (Figure 10 style) | 39,930 | 20,567 (51.5 %) | 1,316,288 | 0.09 MB |
-| Crowd, 100 heads (Figure 1) | 9,998,570 | 1,417,563 (14.2 %) | 90,456,672 | **1.61 MB** (14.1-19.1 KB/model) |
-| 200 teapots x 50k (Figure 9) | 10,000,000 | 3,530,620 (35.3 %) | 224,637,248 | 1.53 MB (7.7 KB/model) |
+| Crowd, 100 heads (Figure 1) | 9,998,570 | 692,501 (6.9 %) | 40,293,504 | **1.61 MB** (14.1-19.1 KB/model) |
+| 200 teapots x 50k (Figure 9) | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB (7.7 KB/model) |
 
-Scene build (hair mesh + all five textures for every model) takes 5.7 ms for one head,
-19.1 ms for the 100-head crowd and 9.3 ms for the 200 teapots.
+Scene build (hair mesh + all five textures for every model) takes 9.2 ms for one head,
+21.1 ms for the 100-head crowd and 13.5 ms for the 200 teapots.
 
 Rendered-strand fractions grow with resolution and shrink with distance, which is exactly what
-Eq. 7 predicts: the same crowd at 640x400 renders 4,419,616 strands (44.2 %) and
-145,847,328 triangles, because `L` is proportional to the vertical resolution `R`.
+Eq. 7 predicts (`L` is proportional to the vertical resolution `R` and inverse to the distance):
+the same crowd at 800x460 renders 1,060,779 strands (10.6 %) and 67,365,280 triangles, and the
+200 teapots at 800x460 render 1,571,716 strands (15.7 %) and 62,420,992 triangles. The hero head
+sits closest to the camera, which is why it keeps half of its strands.
 
 | Paper target | Where it comes from | Status here |
 | --- | --- | --- |
