@@ -6,13 +6,22 @@
 // compute fallback of Section 3.2), PCF shadows, bloom and the composite into the
 // acquired image, which is left in PRESENT_SRC_KHR.
 //
-// Headless CI mode:  adb shell am start -n com.silkcrowd.renderer/.MainActivity \
-//                        --ez headless true --ei seconds 15
+// Headless CI mode:
+//   adb shell am start -n com.silkcrowd.renderer/.MainActivity
+//       --ez headless true --ei seconds 15
 // renders the crowd scene without drawing to the window and logs the statistics line.
+// volk-style: the platform surface structs only exist when this is defined before vulkan.h.
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+
+#include <android/asset_manager.h>
 #include <android/log.h>
+#include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <jni.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -239,8 +248,13 @@ bool initVulkan(android_app* app, AppState* s) {
 
 bool initRenderer(android_app* app, AppState* s) {
     s->renderer = std::make_unique<HairGpuRenderer>();
-    const uint32_t w = static_cast<uint32_t>(ANativeWindow_getWidth(app->window));
-    const uint32_t h = static_cast<uint32_t>(ANativeWindow_getHeight(app->window));
+    // Headless CI runs still get a window, but fall back to 720p if the window is gone.
+    const uint32_t w = app->window
+                           ? static_cast<uint32_t>(ANativeWindow_getWidth(app->window))
+                           : 1280u;
+    const uint32_t h = app->window
+                           ? static_cast<uint32_t>(ANativeWindow_getHeight(app->window))
+                           : 720u;
     std::string error;
     if (!s->renderer->init(&s->context, w, h, false, &error)) {
         LOGE("renderer init failed: %s", error.c_str());
@@ -280,6 +294,10 @@ void renderFrame(AppState* s, float dt, bool headless) {
     if (vkAcquireNextImageKHR(s->context.device(), s->swapchain, UINT64_MAX, s->acquireSem,
                               VK_NULL_HANDLE, &index) != VK_SUCCESS)
         return;
+    // The composite pass writes through an externally supplied view, so it has to follow the
+    // acquired image.
+    s->renderer->setCompositeTarget(index < s->views.size() ? s->views[index] : VK_NULL_HANDLE,
+                                    s->swapchainFormat);
     if (!s->renderer->renderToSwapchainImage(s->images[index], s->extent.width,
                                              s->extent.height, cam, opt))
         return;
@@ -306,7 +324,15 @@ void android_main(android_app* app) {
                     if (!initRenderer(a, g_app)) return;
                     createSwapchain(g_app, ANativeWindow_getWidth(a->window),
                                     ANativeWindow_getHeight(a->window));
-                    g_app->renderer->setCompositeTarget(VK_NULL_HANDLE, g_app->swapchainFormat);
+                }
+                break;
+            case APP_CMD_WINDOW_RESIZED:
+            case APP_CMD_CONFIG_CHANGED:
+                if (a->window && g_app->renderer) {
+                    vkDeviceWaitIdle(g_app->context.device());
+                    destroySwapchain(g_app);
+                    createSwapchain(g_app, ANativeWindow_getWidth(a->window),
+                                    ANativeWindow_getHeight(a->window));
                 }
                 break;
             case APP_CMD_TERM_WINDOW:

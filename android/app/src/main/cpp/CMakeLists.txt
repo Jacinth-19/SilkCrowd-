@@ -42,6 +42,7 @@ target_include_directories(silkcrowd PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(silkcrowd PRIVATE
   SILKCROWD_WITH_VULKAN=1
+  VK_USE_PLATFORM_ANDROID_KHR=1
   SILKCROWD_SHADER_DIR="shaders")
 target_link_libraries(silkcrowd
   native_app_glue vulkan android log EGL GLESv2)
@@ -50,3 +51,7 @@ target_link_libraries(silkcrowd
 # copied to the app's private directory (assets are not fopen()-able) and the process
 # working directory is set there, which is where loadShader() looks.
 set_target_properties(silkcrowd PROPERTIES OUTPUT_NAME "silkcrowd")
+
+# native_app_glue provides ANativeActivity_onCreate from a static library, so the entry
+# point has to be marked as used or the linker drops it and the Activity fails to start.
+target_link_options(silkcrowd PRIVATE "-u ANativeActivity_onCreate")
