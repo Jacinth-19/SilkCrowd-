@@ -52,6 +52,7 @@ int runGpuScreenshot(const GpuAppOptions& o, std::string* error) {
     options.width = o.width;
     options.height = o.height;
     options.msaa = o.msaa;
+    options.taa = o.taa;
     options.enableLod = o.lod;
     options.exposure = o.exposure;
     options.drawShadows = o.shadows;

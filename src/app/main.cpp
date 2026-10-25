@@ -61,6 +61,7 @@ struct Args {
     bool software = false;  // force the software path
     bool compute = false;   // force the compute fallback on a mesh-shader device
     int msaa = 1;
+    bool taa = true;
 };
 
 void printHelp() {
@@ -95,6 +96,7 @@ void printHelp() {
         "  --software / --cpu          force the dependency-free software rasteriser\n"
         "  --compute                   force the compute-shader fallback (Adreno/UHD path)\n"
         "  --msaa N                    1, 2, 4 or 8 (Vulkan path)\n"
+        "  --no-taa                    disable temporal anti-aliasing (Vulkan path)\n"
         "  --wind F                    wind speed in m/s (simulation)\n");
 }
 
@@ -137,6 +139,7 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--software" || s == "--cpu") { a.software = true; a.gpu = false; }
         else if (s == "--compute") a.compute = true;
         else if (s == "--msaa") a.msaa = std::stoi(next("--msaa"));
+        else if (s == "--no-taa") a.taa = false;
         else if (s == "--no-hair") a.drawHair = false;
         else if (s == "--no-head") a.drawHead = false;
         else if (s == "--help" || s == "-h") { printHelp(); std::exit(0); }
@@ -721,6 +724,7 @@ bool tryGpuScreenshot(const Args& a, std::string* error) {
     gpu.style = a.style;
     gpu.strands = a.strandCount;
     gpu.msaa = a.msaa;
+    gpu.taa = a.taa;
     gpu.frames = a.frames;
     gpu.lod = a.lod;
     gpu.useMeshShaders = !a.compute;

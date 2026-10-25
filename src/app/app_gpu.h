@@ -16,6 +16,7 @@ struct GpuAppOptions {
     int strands = 40000;          // root strands for the single-head scene
     int msaa = 1;                 // 1, 2, 4 or 8
     int frames = 1;               // frames to render before the screenshot
+    bool taa = true;              // temporal anti-aliasing
     bool lod = true;
     bool useMeshShaders = true;   // false forces the compute fallback
     bool validation = false;

@@ -35,6 +35,7 @@ struct RenderOptions {
     int height = 720;
     int ssaa = 2;                // supersampling factor (software MSAA substitute)
     int msaa = 1;                // hardware MSAA sample count (Vulkan path)
+    bool taa = true;             // temporal anti-aliasing (Vulkan path)
     bool enableLod = true;       // Figure 8: LOD on/off comparison
     bool strandLod = true;
     bool vertexLod = true;

@@ -198,6 +198,34 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
         vkUpdateDescriptorSets(dev, 1, &bw, 0, nullptr);
     }
 
+    // ---- TAA resolve layout: current colour, history, uniforms ----
+    {
+        VkDescriptorSetLayoutBinding b[3]{};
+        for (int i = 0; i < 2; ++i) {
+            b[i].binding = static_cast<uint32_t>(i);
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        b[2].binding = 2;
+        b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[2].descriptorCount = 1;
+        b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        lci.bindingCount = 3;
+        lci.pBindings = b;
+        SILK_VK_CHECK(vkCreateDescriptorSetLayout(dev, &lci, nullptr, &taaLayout_));
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pc.size = 16;
+        VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        ci.setLayoutCount = 1;
+        ci.pSetLayouts = &taaLayout_;
+        ci.pushConstantRangeCount = 1;
+        ci.pPushConstantRanges = &pc;
+        SILK_VK_CHECK(vkCreatePipelineLayout(dev, &ci, nullptr, &taaPipelineLayout_));
+    }
+
     // ---- head pipeline layout (push constants only) ----
     {
         VkPushConstantRange pc{};
@@ -600,6 +628,10 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
             return false;
         if (!makeFullscreen("composite.frag.spv", VK_FORMAT_R8G8B8A8_UNORM, false,
                             compositePipelineLayout_, &compositePipelineRgba_))
+            return false;
+        // TAA resolve writes the same RGBA16F HDR format it reads.
+        if (!makeFullscreen("taa.frag.spv", VK_FORMAT_R16G16B16A16_SFLOAT, false,
+                            taaPipelineLayout_, &taaPipeline_))
             return false;
         vkDestroyShaderModule(dev, vert, nullptr);
     }
@@ -1167,10 +1199,25 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         height_ != static_cast<uint32_t>(options.height))
         resize(static_cast<uint32_t>(options.width), static_cast<uint32_t>(options.height));
 
+    // ---- temporal AA: advance the sub-pixel jitter, then use one jittered projection for
+    // the whole frame (geometry, light matrices, resolve).
+    taaEnabled_ = options.taa;
+    if (taaEnabled_ && (resolvedImage_ == VK_NULL_HANDLE || resolvedView_ == VK_NULL_HANDLE ||
+                        width_ != resolvedWidth_ || height_ != resolvedHeight_)) {
+        createTaaResources();
+        taaResetRequested_ = true;
+    }
+    if (taaEnabled_) advanceJitter();
+    const Mat4 proj = jitteredProj(camera);
+    const Mat4 viewProj = proj * camera.view();
+    copyMat(viewProj, currentViewProj_);
+    copyMat(viewProj.inverseAffine(), currentInvViewProj_);
+    if (taaEnabled_) bindPresentationImages(taaHistoryValid_);
+
     // Uniforms.
     CameraUniforms camU{};
     copyMat(camera.view(), camU.view);
-    copyMat(camera.proj(), camU.proj);
+    copyMat(proj, camU.proj);
     camU.cameraPos[0] = camera.position.x;
     camU.cameraPos[1] = camera.position.y;
     camU.cameraPos[2] = camera.position.z;
@@ -1304,12 +1351,12 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
 
     if (options.drawHead && headPipeline_ != VK_NULL_HANDLE && scene_) {
         vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, headPipeline_);
-        const Mat4 viewProj = camera.proj() * camera.view();
+        const Mat4 headViewProj = proj * camera.view();
         auto drawMesh = [&](const StaticMeshGpu& mesh, VkBuffer indexBuffer, Vec3 albedo,
                             float spec) {
             if (mesh.indexCount == 0) return;
             HeadPush push{};
-            copyMat(viewProj, push.mvp);
+            copyMat(headViewProj, push.mvp);
             copyMat(Mat4::identity(), push.model);
             push.albedo[0] = albedo.x;
             push.albedo[1] = albedo.y;
@@ -1328,7 +1375,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
                               float spec, const Mat4& xform) {
             if (mesh.indexCount == 0) return;
             HeadPush push{};
-            copyMat(viewProj * xform, push.mvp);
+            copyMat(headViewProj * xform, push.mvp);
             copyMat(xform, push.model);
             push.albedo[0] = albedo.x;
             push.albedo[1] = albedo.y;
@@ -1369,10 +1416,22 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
     if (options.drawHair) recordHairDraw(commandBuffer_, camera, options, false);
     vkCmdEndRendering(commandBuffer_);
 
-    // ---- bloom (bright pass + blur into the 1/4 resolution target) ----
-    ctx_->imageLayoutTransition(commandBuffer_, hdrImage_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                VK_IMAGE_ASPECT_COLOR_BIT);
+    // ---- temporal resolve, then bloom over the resolved image ----
+    if (taaEnabled_ && taaPipeline_ != VK_NULL_HANDLE) {
+        ctx_->imageLayoutTransition(commandBuffer_, hdrImage_,
+                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_ASPECT_COLOR_BIT);
+        recordTaaPass(commandBuffer_, taaResetRequested_);
+        taaResetRequested_ = false;
+        // Bloom and the composite now sample the resolved image.
+        bindPresentationImages(taaHistoryValid_ || resolvedView_ != VK_NULL_HANDLE);
+    } else {
+        ctx_->imageLayoutTransition(commandBuffer_, hdrImage_,
+                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_ASPECT_COLOR_BIT);
+    }
     if (bloomPipeline_ != VK_NULL_HANDLE) recordBloomPass(commandBuffer_, options);
 
     // ---- tone mapping / sky / grid: composite into the LDR target ----
@@ -1406,10 +1465,14 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
 
     if (!screenshotPath.empty()) readbackToPng(screenshotPath);
 
+    ++frameCounter_;
+    std::memcpy(prevViewProj_, currentViewProj_, sizeof(prevViewProj_));
+
     stats_.frameMs = std::chrono::duration<double, std::milli>(clock::now() - start).count();
     stats_.crowdCount = static_cast<int>(models_.size());
-    stats_.msaa = 1;
+    stats_.msaa = options.msaa;
     stats_.meshShaderPath = hasMeshShaders_;
+    stats_.taa = taaEnabled_;
     return true;
 }
 
@@ -1463,6 +1526,8 @@ void HairGpuRenderer::resize(uint32_t width, uint32_t height) {
     }
     vkDeviceWaitIdle(ctx_->device());
     createRenderTargets();   // destroys and recreates every resolution-dependent target
+    createTaaResources();
+    taaResetRequested_ = true;
     // The composite descriptor set samples hdr/bloom, so it is rewritten as well.
     if (compositeSet_ != VK_NULL_HANDLE) {
         VkDescriptorImageInfo imgs[2] = {
@@ -2039,7 +2104,10 @@ void HairGpuRenderer::shutdown() {
     ctx_->destroyImage(bloomImage_, bloomMemory_, bloomView_);
     ctx_->destroyImage(depthImage_, depthMemory_, depthView_);
     ctx_->destroyImage(shadowImage_, shadowMemory_, shadowView_);
-    hdrImage_ = bloomImage_ = depthImage_ = shadowImage_ = VK_NULL_HANDLE;
+    ctx_->destroyImage(resolvedImage_, resolvedMemory_, resolvedView_);
+    ctx_->destroyImage(historyImage_, historyMemory_, historyView_);
+    hdrImage_ = bloomImage_ = depthImage_ = shadowImage_ = resolvedImage_ = historyImage_ =
+        VK_NULL_HANDLE;
 
     const std::pair<VkBuffer, VkDeviceMemory> owned[] = {
         {sampleBuffer_, sampleMemory_},
@@ -2075,12 +2143,225 @@ void HairGpuRenderer::shutdown() {
     if (samplerShadow_ != VK_NULL_HANDLE) vkDestroySampler(dev, samplerShadow_, nullptr);
     samplerLinear_ = samplerShadow_ = VK_NULL_HANDLE;
 
+    if (taaUniform_ != VK_NULL_HANDLE) ctx_->destroyBuffer(taaUniform_, taaUniformMemory_);
+    taaUniform_ = VK_NULL_HANDLE;
+    if (taaLayout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(dev, taaLayout_, nullptr);
+    taaLayout_ = VK_NULL_HANDLE;
+    if (taaPipelineLayout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(dev, taaPipelineLayout_, nullptr);
+    taaPipelineLayout_ = VK_NULL_HANDLE;
+    if (taaPipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(dev, taaPipeline_, nullptr);
+    taaPipeline_ = VK_NULL_HANDLE;
+
     if (frameFence_ != VK_NULL_HANDLE) vkDestroyFence(dev, frameFence_, nullptr);
     if (commandPool_ != VK_NULL_HANDLE) vkDestroyCommandPool(dev, commandPool_, nullptr);
     frameFence_ = VK_NULL_HANDLE;
     commandBuffer_ = VK_NULL_HANDLE;
     commandPool_ = VK_NULL_HANDLE;
     ctx_ = nullptr;
+}
+
+}  // namespace silk
+
+namespace silk {
+
+// =============================================================================
+//  Temporal anti-aliasing
+// =============================================================================
+bool HairGpuRenderer::createTaaResources() {
+    VkDevice dev = ctx_->device();
+    auto destroyIfAny = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
+        if (img != VK_NULL_HANDLE) ctx_->destroyImage(img, mem, view);
+        img = VK_NULL_HANDLE;
+        mem = VK_NULL_HANDLE;
+        view = VK_NULL_HANDLE;
+    };
+    destroyIfAny(resolvedImage_, resolvedMemory_, resolvedView_);
+    destroyIfAny(historyImage_, historyMemory_, historyView_);
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    resolvedImage_ = ctx_->createImage2D(width_, height_, VK_FORMAT_R16G16B16A16_SFLOAT, usage,
+                                         VK_IMAGE_ASPECT_COLOR_BIT, &resolvedMemory_,
+                                         &resolvedView_);
+    if (resolvedImage_ == VK_NULL_HANDLE) return false;
+    historyImage_ = ctx_->createImage2D(width_, height_, VK_FORMAT_R16G16B16A16_SFLOAT, usage,
+                                        VK_IMAGE_ASPECT_COLOR_BIT, &historyMemory_,
+                                        &historyView_);
+    if (historyImage_ == VK_NULL_HANDLE) return false;
+
+    VkCommandBuffer cmd = ctx_->beginSingleTimeCommands();
+    ctx_->imageLayoutTransition(cmd, resolvedImage_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_ASPECT_COLOR_BIT);
+    ctx_->imageLayoutTransition(cmd, historyImage_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_ASPECT_COLOR_BIT);
+    ctx_->endSingleTimeCommands(cmd);
+
+    if (taaUniform_ == VK_NULL_HANDLE) {
+        taaUniform_ = ctx_->createBuffer(sizeof(TaaUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                         &taaUniformMemory_);
+        if (taaUniform_ == VK_NULL_HANDLE) return false;
+        vkMapMemory(dev, taaUniformMemory_, 0, sizeof(TaaUniforms), 0, &taaUniformMapped_);
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = descriptorPool_;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &taaLayout_;
+        if (vkAllocateDescriptorSets(dev, &ai, &taaSet_) != VK_SUCCESS) return false;
+    }
+
+    VkDescriptorImageInfo cur{samplerLinear_, hdrView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo hist{samplerLinear_, historyView_,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo ubo{taaUniform_, 0, sizeof(TaaUniforms)};
+    VkWriteDescriptorSet writes[3]{};
+    for (int i = 0; i < 3; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = taaSet_;
+        writes[i].dstBinding = static_cast<uint32_t>(i);
+        writes[i].descriptorCount = 1;
+    }
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &cur;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &hist;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].pBufferInfo = &ubo;
+    vkUpdateDescriptorSets(dev, 3, writes, 0, nullptr);
+    resolvedWidth_ = width_;
+    resolvedHeight_ = height_;
+    taaHistoryValid_ = false;
+    return true;
+}
+
+// Halton(2,3) sub-pixel jitter, cycled over 8 frames. Advanced once per frame, before the
+// main pass, so that the projection the geometry is rendered with and the projection the
+// resolve reprojects from are the same one.
+void HairGpuRenderer::advanceJitter() {
+    auto halton = [](uint32_t index, uint32_t base) {
+        float f = 1.0f, r = 0.0f;
+        uint32_t i = index;
+        while (i > 0) {
+            f /= static_cast<float>(base);
+            r += f * static_cast<float>(i % base);
+            i /= base;
+        }
+        return r;
+    };
+    const uint32_t n = frameCounter_ + 1;
+    prevJitter_[0] = jitter_[0];
+    prevJitter_[1] = jitter_[1];
+    const float scale = 1.0f;   // jitter magnitude in pixels, before the NDC conversion
+    jitter_[0] = (halton((n % 8u) + 1u, 2u) - 0.5f) * scale;
+    jitter_[1] = (halton((n % 8u) + 1u, 3u) - 0.5f) * scale;
+}
+
+// Clip-space translation by the sub-pixel jitter: M' = T(ndcJitter) * M, so the whole scene
+// is rendered half a pixel off and the temporal resolve reconstructs the exact result.
+Mat4 HairGpuRenderer::jitteredProj(const Camera& cam) const {
+    Mat4 proj = cam.proj();
+    if (!taaEnabled_) return proj;
+    const float ndcX = 2.0f * jitter_[0] / static_cast<float>(std::max(width_, 1u));
+    const float ndcY = 2.0f * jitter_[1] / static_cast<float>(std::max(height_, 1u));
+    return Mat4::translate(Vec3(ndcX, ndcY, 0.0f)) * proj;
+}
+
+// Points the bloom/composite descriptors at the TAA-resolved HDR image (or the raw HDR
+// target when TAA is off).
+void HairGpuRenderer::bindPresentationImages(bool useResolved) {
+    if (!ctx_ || compositeSet_ == VK_NULL_HANDLE) return;
+    VkImageView srcView = useResolved && resolvedView_ != VK_NULL_HANDLE ? resolvedView_ : hdrView_;
+    VkDescriptorImageInfo imgs[2] = {{samplerLinear_, srcView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                     {samplerLinear_, bloomView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (int i = 0; i < 2; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = compositeSet_;
+        writes[i].dstBinding = static_cast<uint32_t>(i);
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &imgs[i];
+    }
+    vkUpdateDescriptorSets(ctx_->device(), 2, writes, 0, nullptr);
+
+    VkDescriptorImageInfo bloomSrc{samplerLinear_, srcView,
+                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet bw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    bw.dstSet = bloomSet_;
+    bw.dstBinding = 0;
+    bw.descriptorCount = 1;
+    bw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bw.pImageInfo = &bloomSrc;
+    vkUpdateDescriptorSets(ctx_->device(), 1, &bw, 0, nullptr);
+    usingResolved_ = useResolved;
+}
+
+void HairGpuRenderer::recordTaaPass(VkCommandBuffer cmd, bool reset) {
+    if (taaPipeline_ == VK_NULL_HANDLE || taaSet_ == VK_NULL_HANDLE || !taaUniformMapped_)
+        return;
+
+    TaaUniforms u{};
+    std::memcpy(u.prevViewProj, prevViewProj_, sizeof(u.prevViewProj));
+    std::memcpy(u.invViewProj, currentInvViewProj_, sizeof(u.invViewProj));
+    u.jitter[0] = jitter_[0];
+    u.jitter[1] = jitter_[1];
+    u.jitter[2] = prevJitter_[0];
+    u.jitter[3] = prevJitter_[1];
+    u.params[0] = 0.12f;                                   // blend weight (fixed jitter)
+    u.params[1] = (reset || !taaHistoryValid_) ? 1.0f : 0.0f;
+    std::memcpy(taaUniformMapped_, &u, sizeof(u));
+
+    ctx_->imageLayoutTransition(cmd, resolvedImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                VK_IMAGE_ASPECT_COLOR_BIT);
+    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    color.imageView = resolvedView_;
+    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {width_, height_}};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &color;
+    vkCmdBeginRendering(cmd, &ri);
+    VkViewport vp{0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {width_, height_}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, taaPipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, taaPipelineLayout_, 0, 1,
+                            &taaSet_, 0, nullptr);
+    float params[4] = {0.12f, reset ? 1.0f : 0.0f, 0.0f, 0.0f};
+    vkCmdPushConstants(cmd, taaPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params),
+                       params);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+
+    // The resolved frame becomes the next frame's history, and the composite/bloom passes
+    // read it instead of the raw HDR target.
+    ctx_->imageLayoutTransition(cmd, resolvedImage_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    ctx_->imageLayoutTransition(cmd, historyImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageCopy copy{};
+    copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent = {width_, height_, 1};
+    vkCmdCopyImage(cmd, resolvedImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, historyImage_,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    ctx_->imageLayoutTransition(cmd, historyImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_ASPECT_COLOR_BIT);
+    ctx_->imageLayoutTransition(cmd, resolvedImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_ASPECT_COLOR_BIT);
+
+    taaHistoryValid_ = true;
 }
 
 }  // namespace silk

@@ -189,8 +189,16 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   shell - that is Figure 4a's artifact).
 * **Head / body / teapot**: per-vertex shading with a skin profile, procedural eyes (sclera,
   iris, pupil) and lips in the software path.
-* **Frame**: HDR RGBA16F target, bloom pass, tone mapping, procedural Hosek-Wilkie-style sky
-  gradient, infinite grid, sun aureole.
+* **Image-based lighting**: the sky gradient is sampled along the fibre normal for the diffuse
+  term and along the reflection vector for the specular environment term (the "angel ring"
+  highlight); the sun's aureole enters both.
+* **Frame**: HDR RGBA16F target, **temporal anti-aliasing** (Halton(2,3) sub-pixel jitter,
+  reprojection against the previous view-projection, 3x3 neighbourhood colour clamp, variance
+  guided blend; `--no-taa` disables it), bloom pass, tone mapping, procedural
+  Hosek-Wilkie-style sky gradient, infinite grid, sun aureole.
+* **MSAA**: `--msaa 8` (and the inspector's 1x/2x/4x/8x control) selects the sample count for
+  the hardware path; TAA and MSAA are independent, since MSAA does nothing for the alpha-blended
+  hair while TAA converges it over frames.
 * **Simulation**: XPBD stretch/bending/shape-matching constraints, head-sphere collision with
   friction, turbulent wind as drag toward a moving air velocity, mouse drag.
 

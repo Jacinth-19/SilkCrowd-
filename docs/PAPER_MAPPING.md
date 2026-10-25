@@ -131,7 +131,23 @@ positions *and* tangents, because morphing only positions makes the shading flic
   buffers are sized for the frame's maximum `ns`, so a single uniform stride works for every
   strand.
 
-## 8. Shading
+## 8. Shading and image-based lighting
+
+The multiple-scattering term is the dual-scattering approximation, the single-scattering term is
+the Marschner BCSDF (with a Kajiya-Kay fallback), and the environment is the analytic sky sampled
+along the fibre normal (diffuse) and along the reflection vector (specular), which is a
+closed-form stand-in for a prefiltered cubemap.
+
+## 9. Anti-aliasing
+
+`8x MSAA` is honoured by the Vulkan path (the sample count is a `RenderOptions` field and the
+pipelines are created with it), and `shaders/taa.frag` adds a temporal resolve: Halton(2,3)
+sub-pixel jitter of the projection, reprojection with the previous view-projection, and a 3x3
+neighbourhood clamp on the history so the moving hair does not smear. MSAA and TAA are
+complementary here: MSAA resolves geometric edges but not the alpha-blended strands, TAA
+converges the strands too.
+
+## 10. Shading
 
 Marschner BCSDF with a Kajiya-Kay fallback, dual scattering approximation for the multiple
 scattering term, PCF shadow map (2048^2), and back-to-front alpha compositing against the opaque
@@ -139,7 +155,7 @@ depth buffer. A single depth-tested transparent pass keeps only the front shell,
 the artifact the paper attributes to naive hair rendering; the software renderer's `opaqueDepth_`
 buffer and the GPU path's `depthWriteEnable = VK_FALSE` implement the paper's ordering instead.
 
-## 9. Simulation (Section 3.6)
+## 11. Simulation (Section 3.6)
 
 XPBD (Macklin 2016) with stretch, bending and shape-matching constraints, sag-free rest shape
 initialisation, head-sphere collision with friction, and Wu & Yuksel 2016 wind forces expressed as
@@ -147,7 +163,7 @@ drag toward a moving air velocity (`a = k (v_air - v)`, not a pure acceleration,
 under gravity). `--no-sag-free`, `--wind F` and `--simulate` expose all of it; `--validate`
 reports sag-free drift (`0.0005 m` versus `0.0091 m`) and the monotone wind response.
 
-## 10. Measurements that are checked in CI
+## 12. Measurements that are checked in CI
 
 | Quantity | Paper | This repository |
 | --- | --- | --- |

@@ -122,10 +122,24 @@ void main() {
     vec3 color = (diffuse + specular) * cam.sunColor.rgb * cam.sunDirection.w * shadow * ao +
                  multipleScatter * cam.sunColor.rgb * ao;
 
-    // Ambient from the sky (single-scattering approximation of IBL).
+    // --- image-based lighting ---------------------------------------------------------
+    // Diffuse: the sky gradient evaluated along the fibre normal (the same two-band
+    // approximation the composite pass uses for the sky).
+    vec3 N = normalize(cross(T, V));
     vec3 ambient = mix(cam.skyHorizon.rgb * 0.30, cam.skyZenith.rgb * 0.85,
-                       clamp(0.5 + 0.5 * dot(normalize(cross(T, V)), vec3(0.0, 1.0, 0.0)), 0.0, 1.0));
+                       clamp(0.5 + 0.5 * dot(N, vec3(0.0, 1.0, 0.0)), 0.0, 1.0));
     color += albedo * ambient * (0.30 + 0.35 * ao);
+
+    // Specular: the R lobe reflects around the half-vector; sampling the analytic sky along
+    // that reflection gives the environment highlight that hair gets from a bright sky (the
+    // "angel ring" of a real head of hair). The lobe width is the strand roughness.
+    vec3 R = reflect(-V, N);
+    float skyT = pow(1.0 - clamp(abs(R.y), 0.0, 1.0), 1.7);
+    vec3 envSpec = mix(cam.skyZenith.rgb, cam.skyHorizon.rgb, skyT);
+    float muSun = clamp(dot(R, L), 0.0, 1.0);
+    envSpec += cam.sunColor.rgb * cam.sunDirection.w * (pow(muSun, 64.0) * 0.8 + pow(muSun, 8.0) * 0.08);
+    float rough = clamp(hs.params2.w, 0.02, 1.0);
+    color += envSpec * fresnel(dot(T, H)) * (1.0 - rough) * ao * 0.55;
 
     outColor = vec4(color, hs.params2.x);
 }

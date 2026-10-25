@@ -154,7 +154,8 @@ jobs:
         run: |
           mkdir -p android/app/src/main/assets/shaders
           for s in hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert \
-                   head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag; do
+                   head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag \
+                   taa.frag; do
             glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
               -o "android/app/src/main/assets/shaders/$s.spv"
           done

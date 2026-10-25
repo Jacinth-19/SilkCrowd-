@@ -57,7 +57,7 @@ endif()
 # -----------------------------------------------------------------------------
 set(SILKCROWD_SHADERS
   hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert
-  head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag)
+  head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag taa.frag)
 
 set(SILKCROWD_SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SILKCROWD_SHADER_OUT})

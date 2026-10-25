@@ -56,6 +56,14 @@ struct CompositeUniforms {
     float viewport[4];  // x = width, y = height, z = 1/width, w = 1/height
 };
 
+// Mirrors shaders/taa.frag.
+struct TaaUniforms {
+    float prevViewProj[16];
+    float invViewProj[16];
+    float jitter[4];   // xy = current frame, zw = previous frame
+    float params[4];   // x = blend weight, y = reset flag, z/w reserved
+};
+
 struct GpuStats {
     double frameMs = 0.0;
     double gpuHairMs = 0.0;
@@ -69,6 +77,7 @@ struct GpuStats {
     std::string deviceName;
     std::string vulkanVersion;
     bool meshShaderPath = false;
+    bool taa = false;
     int msaa = 1;
     int crowdCount = 0;
     std::string warning;
@@ -138,6 +147,11 @@ private:
                         bool shadowPass);
     void recordShadowPass(VkCommandBuffer cmd, const Camera& cam);
     void recordBloomPass(VkCommandBuffer cmd, const RenderOptions& opt);
+    bool createTaaResources();
+    void recordTaaPass(VkCommandBuffer cmd, bool reset);
+    void advanceJitter();
+    Mat4 jitteredProj(const Camera& cam) const;
+    void bindPresentationImages(bool useResolved);
     void recordComposite(VkCommandBuffer cmd, VkImage target, uint32_t width, uint32_t height,
                          const RenderOptions& opt);
     bool prepareComputeWorkItems(const Camera& cam, const RenderOptions& opt,
@@ -175,6 +189,29 @@ private:
     VkPipeline compositePipeline_ = VK_NULL_HANDLE;      // BGRA8 (swapchain)
     VkPipeline compositePipelineRgba_ = VK_NULL_HANDLE;  // RGBA8 (offscreen)
     VkPipeline bloomPipeline_ = VK_NULL_HANDLE;
+    VkPipeline taaPipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout taaLayout_ = VK_NULL_HANDLE;
+    VkDescriptorSet taaSet_ = VK_NULL_HANDLE;
+    VkBuffer taaUniform_ = VK_NULL_HANDLE;
+    VkDeviceMemory taaUniformMemory_ = VK_NULL_HANDLE;
+    void* taaUniformMapped_ = nullptr;
+    VkImage resolvedImage_ = VK_NULL_HANDLE;      // TAA output
+    VkDeviceMemory resolvedMemory_ = VK_NULL_HANDLE;
+    VkImageView resolvedView_ = VK_NULL_HANDLE;
+    VkImage historyImage_ = VK_NULL_HANDLE;       // previous resolved frame
+    VkDeviceMemory historyMemory_ = VK_NULL_HANDLE;
+    VkImageView historyView_ = VK_NULL_HANDLE;
+    bool taaEnabled_ = true;
+    bool taaHistoryValid_ = false;
+    uint32_t frameCounter_ = 0;
+    float prevViewProj_[16] = {0};
+    float currentInvViewProj_[16] = {0};
+    float currentViewProj_[16] = {0};
+    float jitter_[2] = {0.0f, 0.0f};
+    float prevJitter_[2] = {0.0f, 0.0f};
+    bool usingResolved_ = false;
+    bool taaResetRequested_ = true;
+    uint32_t resolvedWidth_ = 0, resolvedHeight_ = 0;
 
     // Targets
     VkImage hdrImage_ = VK_NULL_HANDLE;
@@ -225,6 +262,7 @@ private:
     VkPipelineLayout headPipelineLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout compositePipelineLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout drawPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout taaPipelineLayout_ = VK_NULL_HANDLE;
     VkImageView compositeTargetView_ = VK_NULL_HANDLE;
     VkFormat compositeTargetFormat_ = VK_FORMAT_B8G8R8A8_UNORM;
     uint32_t computeWorkItems_ = 0;
