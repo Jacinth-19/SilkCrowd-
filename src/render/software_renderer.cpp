@@ -246,9 +246,13 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     const float z = pr[0].z * b0 + pr[1].z * b1 + pr[2].z * b2;
                     Sample& s = buffer_[static_cast<size_t>(y) * bw_ + x];
                     if (z >= s.depth) continue;
-                    const Vec3 nrm = normalize(n[0] * b0 + n[1] * b1 + n[2] * b2);
+                    Vec3 nrm = normalize(n[0] * b0 + n[1] * b1 + n[2] * b2);
                     const Vec3 pos = p[0] * b0 + p[1] * b1 + p[2] * b2;
                     const Vec3 V = normalize(camPos - pos);
+                    // Two-sided shading: procedurally generated tubes (the neck) and the
+                    // teapot's spout/handle are not guaranteed to be wound outward, and an
+                    // inward normal makes the surface read as an unlit gray silhouette.
+                    if (dot(nrm, V) < 0.0f) nrm = -nrm;
                     Vec3 alb = baseAlbedo;
                     const float ndl = saturate(dot(nrm, scene.sunDirection));
                     float wrap = ndl;
@@ -263,6 +267,16 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     } else if (isSkin) {
                         alb = Vec3(0.66f, 0.47f, 0.39f);
                         wrap = saturate((dot(nrm, scene.sunDirection) + 0.40f) / 1.40f);
+                        // Eyebrows: a soft band just above each eye socket.
+                        {
+                            const float bx = (std::fabs(pos.x) - 0.0272f) / 0.0185f;
+                            const float by = (pos.y - 0.0835f) / 0.0052f;
+                            const float b2 = bx * bx + by * by;
+                            if (nrm.z > 0.25f && b2 < 1.0f) {
+                                const float t = smoothstepf(0.15f, 1.0f, b2);
+                                alb = lerp(alb, Vec3(0.20f, 0.13f, 0.09f), (1.0f - t) * 0.85f);
+                            }
+                        }
                         // Lips: a soft ellipse rather than a rectangle, with a darker
                         // crease between the upper and lower lip.
                         const float mx = pos.x / 0.0245f;

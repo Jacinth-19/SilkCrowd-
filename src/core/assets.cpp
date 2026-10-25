@@ -51,8 +51,8 @@ void HeadModel::buildEyes() {
         // Seated in the eye socket: the socket is 7.5 mm deep, so an eyeball of radius
         // 11.5 mm placed 6 mm behind the (deformed) surface leaves the cornea proud of the
         // socket without looking like a bug eye.
-        const Vec3 c = surfacePoint(theta, phi) - surfaceNormal(theta, phi) * 0.0060f;
-        const float r = 0.0115f;
+        const Vec3 c = surfacePoint(theta, phi) - surfaceNormal(theta, phi) * 0.0042f;
+        const float r = 0.0122f;
         const int nu = 20, nv = 14;
         const uint32_t base = static_cast<uint32_t>(eyes_.positions.size());
         for (int j = 0; j <= nv; ++j) {
