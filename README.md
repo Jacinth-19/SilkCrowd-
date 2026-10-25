@@ -183,10 +183,14 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
 
 ## Rendering
 
-* **Hair**: Marschner BCSDF with a Kajiya-Kay fallback (`shaders/hair.frag`), dual scattering
-  approximation, PCF shadows from a 2048^2 depth map, order-independent back-to-front alpha
-  compositing against the opaque depth buffer (a single depth-tested pass keeps only the front
-  shell - that is Figure 4a's artifact).
+* **Hair**: Marschner BCSDF (`shaders/hair.frag`) - longitudinal **M** as a normalised Gaussian
+  per lobe, shifted by the cuticle tilt (`alpha_R = -0.10`, `alpha_TRT = +0.14`), azimuthal **N**
+  as a von Mises lobe evaluated on the true `phi_i`/`phi_o` in the fibre frame (the TRT lobe
+  additionally shifted by the refraction offset), Fresnel with `F0 = 0.046`, and the projected
+  area `cos(theta_i)`; a Kajiya-Kay diffuse term wraps light around the fibre, a dual-scattering
+  approximation stands in for the strands LOD removed, and PCF shadows come from a 2048^2 depth
+  map. Hair is composited back-to-front against the opaque depth buffer (a single depth-tested
+  pass keeps only the front shell - that is Figure 4a's artifact).
 * **Head / body / teapot**: per-vertex shading with a skin profile, procedural eyes (sclera,
   iris, pupil) and lips in the software path.
 * **Image-based lighting**: the sky gradient is sampled along the fibre normal for the diffuse
@@ -196,9 +200,14 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   reprojection against the previous view-projection, 3x3 neighbourhood colour clamp, variance
   guided blend; `--no-taa` disables it), bloom pass, tone mapping, procedural
   Hosek-Wilkie-style sky gradient, infinite grid, sun aureole.
-* **MSAA**: `--msaa 8` (and the inspector's 1x/2x/4x/8x control) selects the sample count for
-  the hardware path; TAA and MSAA are independent, since MSAA does nothing for the alpha-blended
-  hair while TAA converges it over frames.
+* **MSAA**: `--msaa 8` (and the inspector's 1x/2x/4x/8x control) is real hardware MSAA on the
+  Vulkan path. The main HDR pass renders into a multisampled RGBA16F colour + depth pair and
+  resolves (`VK_RESOLVE_MODE_AVERAGE`) into the single-sampled HDR target that bloom, TAA and the
+  composite read; the shadow map, bloom chain, TAA resolve and composite stay single-sampled.
+  The sample count is clamped to `framebufferColorSampleCounts`/`framebufferDepthSampleCounts`,
+  and changing it rebuilds only the three main-pass pipelines plus the MSAA attachments. TAA and
+  MSAA are independent: MSAA cannot anti-alias the alpha-blended hair shell, TAA converges it
+  over frames. (The software renderer has no MSAA - it supersamples with `--ssaa`.)
 * **Simulation**: XPBD stretch/bending/shape-matching constraints, head-sphere collision with
   friction, turbulent wind as drag toward a moving air velocity, mouse drag.
 
@@ -226,13 +235,28 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 * The **core library, texture system, LOD, root placement, simulation and software renderer** are
   built and measured in this repository; every number in the tables above was produced by
   `./build/SilkCrowd` on this checkout.
-* The **Vulkan path** (`src/gpu`, `shaders/`) is complete and type-checks against the official
-  Khronos headers, and every vertex/fragment/compute shader compiles to SPIR-V. Its timings come
-  from the CI runs on real devices (lavapipe, MoltenVK, an Android emulator) and are copied into
-  the table above by the workflow - if a row says `n/a`, that platform has not reported yet.
+* The **Vulkan path** (`src/gpu`, `shaders/`) compiles in this checkout against the official
+  Khronos headers and links into the binary, and every vertex/fragment/compute shader compiles to
+  SPIR-V (10 of 13 - `hair.task`/`hair.mesh` need `glslc`, which also emits the other eleven).
+  It has not been *executed* on this machine (no Vulkan driver), so its timings come from the CI
+  runs on real devices (lavapipe, MoltenVK, an Android emulator) and are copied into the table
+  above by the workflow - if a row says `n/a`, that platform has not reported yet.
 * Software-renderer timings (hundreds of milliseconds per frame) are **not** the paper's GPU
   numbers and are not presented as such: they measure the algorithmic workload (strand counts,
   triangles, storage) that the GPU path produces.
+
+### What was actually built and run
+
+| Configuration | Command | Result |
+| --- | --- | --- |
+| GNU Make, Release (`-O2 -g -Wall -Wextra`) | `make -j2` | 0 warnings, binary + tests |
+| CMake + Ninja, Release, `SILKCROWD_STRICT=ON` (`-Werror`) | `cmake -B build -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON && cmake --build build` | 0 warnings, 0 errors |
+| CTest | `ctest` in the build tree | **2/2** (`unit_tests`, `validation`) |
+| Unit tests | `./build/silkcrowd_tests` | **3196 checks, 0 failures** |
+| Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
+| Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
+| Shaders | `glslang` (SPIR-V) | 10/13 compile; `hair.task`, `hair.mesh` need `glslc` |
+| Qt6 editor | `src/app/qt_app.cpp` | **not built here** - no Qt6 in this environment |
 
 ## Repository layout
 

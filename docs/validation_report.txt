@@ -57,7 +57,7 @@ texture eval vs exact Catmull-Rom: max error 0.000343443
   [PASS] Eq. 7 detail level falls with distance  (L(0.3m)=1.000000, L(12m)=0.049455)
 
 == Procedural styling (Section 3.4, Figure 10) ==
-  2000 strands x 33 vertices: 28.21 ms with styling, 14.74 ms without (+91%)
+  2000 strands x 33 vertices: 30.33 ms with styling, 16.69 ms without (+82%)
   [PASS] styling operations are applied after base curve generation  (cost measured above)
 
 == Hair mesh simulation (Section 4: XPBD, Wu and Yuksel 2016, Hsu 2022) ==

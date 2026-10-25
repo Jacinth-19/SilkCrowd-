@@ -1,8 +1,9 @@
 // =============================================================================
 //  SilkCrowd - hair.frag
-//  Marschner BCSDF (longitudinal R and TRT lobes with the classic shifted-tangent
-//  approximation) with a Kajiya-Kay fallback, a dual-scattering approximation for the
-//  low-LOD thick strands, and PCF shadows.
+//  Marschner BCSDF: longitudinal M (Gaussian per lobe, cuticle-tilt shifted), azimuthal
+//  N (von Mises, R and refracted TRT), Fresnel (Schlick, F0 = 0.046), a Kajiya-Kay
+//  diffuse term, a dual-scattering approximation for the low-LOD thick strands, IBL and
+//  PCF shadows. theta_i/theta_o are the true inclinations, not a half-vector proxy.
 // =============================================================================
 #version 460
 
@@ -40,10 +41,14 @@ layout(push_constant) uniform HairShading {
 
 const float PI = 3.14159265359;
 
-// Marschner's longitudinal M term: a normalised Gaussian around the half-angle offset.
-float longitudinalM(float thetaI, float thetaR, float v) {
-    float d = thetaR - thetaI;
-    return exp(-d * d / (2.0 * v * v)) / (sqrt(2.0 * PI) * v);
+// Marschner's longitudinal M term (Marschner et al. 2003, Eq. 3): a normalised
+// Gaussian in the difference of the incident/outgoing inclinations, shifted by the
+// per-lobe tilt alpha (the cuticle scale tilt). thetaI and thetaO are measured from
+// the plane normal to the fibre, so a mirror reflection has thetaO = -thetaI and the
+// lobe therefore peaks where thetaO + thetaI == alpha.
+float longitudinalM(float thetaI, float thetaO, float alpha, float beta) {
+    float d = thetaO + thetaI - alpha;
+    return exp(-d * d / (2.0 * beta * beta)) / (sqrt(2.0 * PI) * beta);
 }
 
 // Fresnel for the two lobes (Schlick with the hair's dielectric F0 = 0.046).
@@ -84,30 +89,46 @@ void main() {
     if (dot(T, T) < 1e-8) T = vec3(0.0, 1.0, 0.0);
     vec3 V = normalize(cam.cameraPos.xyz - inWorldPos);
     vec3 L = normalize(cam.sunDirection.xyz);
+    vec3 H = normalize(L + V);
 
     // Root-to-tip darkening (roots are shadowed by the hair above them).
     vec3 rootTint = hs.color.rgb * 0.45;
     vec3 albedo = mix(rootTint, hs.color.rgb, clamp(inW * 1.3 + 0.1, 0.0, 1.0));
 
-    // --- longitudinal terms: R lobe (shifted towards the root) and TRT (towards the tip) ---
-    vec3 H = normalize(L + V);
-    float sinTL = sqrt(max(1.0 - dot(T, L) * dot(T, L), 0.0));
-    float thetaI = asin(clamp(dot(T, H), -1.0, 1.0));
+    // --- Marschner BCSDF: S = M_p(theta_i, theta_o) * N_p(phi) * Fresnel -------------
+    // Inclinations from the fibre's normal plane (sin of the tangent angle is the
+    // projected-area cosine, so it doubles as the geometry term below).
+    float cosThetaI = sqrt(max(1.0 - dot(T, L) * dot(T, L), 0.0));   // = sin(theta_i)
+    float cosThetaO = sqrt(max(1.0 - dot(T, V) * dot(T, V), 0.0));   // = sin(theta_o)
+    float thetaI = asin(clamp(dot(T, L), -1.0, 1.0));
+    float thetaO = asin(clamp(dot(T, V), -1.0, 1.0));
 
-    // Shifted tangents implement the longitudinal offset of the two lobes.
-    vec3 shiftDir = normalize(cross(cross(T, V), T) + vec3(1e-6));
-    vec3 tR = normalize(T + 0.14 * shiftDir);
-    vec3 tTRT = normalize(T - 0.18 * shiftDir);
-    float sinR = sqrt(max(1.0 - dot(tR, H) * dot(tR, H), 0.0));
-    float sinTRT = sqrt(max(1.0 - dot(tTRT, H) * dot(tTRT, H), 0.0));
+    // Azimuthal frame: (T, u, v) with u, v spanning the plane normal to the fibre.
+    vec3 refUp = abs(T.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 azU = normalize(cross(refUp, T));
+    vec3 azV = cross(T, azU);
+    float phiI = atan(dot(L, azV), dot(L, azU));
+    float phiO = atan(dot(V, azV), dot(V, azU));
+    // The R lobe mirrors about the normal plane (phi_o = -phi_i, so the sum vanishes on
+    // the specular cone); the TRT lobe additionally refracts, which shifts it by delta.
+    float phiR = phiO + phiI;
+    float phiTRT = phiO + phiI - 0.35;
 
-    float mR = longitudinalM(thetaI, 0.0, 0.12) * pow(sinR, 110.0);
-    float mTRT = longitudinalM(thetaI, 0.0, 0.22) * pow(sinTRT, 34.0);
+    // Per-lobe cuticle tilt alpha and roughness beta (degrees -> radians in the constants),
+    // and the von-Mises azimuthal width (larger = tighter).
+    const float alphaR = -0.10, betaR = 0.10;
+    const float alphaTRT = 0.14, betaTRT = 0.20;
+    float mR = longitudinalM(thetaI, thetaO, alphaR, betaR);
+    float mTRT = longitudinalM(thetaI, thetaO, alphaTRT, betaTRT);
+    float nR = azimuthalN(phiR, 180.0);
+    float nTRT = azimuthalN(phiTRT, 40.0);
+
     float f = fresnel(dot(T, H));
     vec3 specColor = mix(vec3(1.0, 0.96, 0.90), albedo * 3.0 + 0.1, hs.params.y);
-    vec3 specular = specColor * (mR * f + mTRT * (1.0 - f) * 0.5) * 40.0;
+    vec3 specular = specColor * (mR * nR * f + mTRT * nTRT * (1.0 - f) * 0.5) * cosThetaI;
 
-    // --- Kajiya-Kay diffuse ---
+    // --- Kajiya-Kay diffuse (the fibre wraps light around, so sin(theta_i) not max(cos)) ---
+    float sinTL = cosThetaI;
     vec3 diffuse = albedo * sinTL * 0.30;
 
     // --- dual scattering for low-detail (thick) strands: approximate the multiple

@@ -133,24 +133,37 @@ positions *and* tangents, because morphing only positions makes the shading flic
 
 ## 8. Shading and image-based lighting
 
-The multiple-scattering term is the dual-scattering approximation, the single-scattering term is
-the Marschner BCSDF (with a Kajiya-Kay fallback), and the environment is the analytic sky sampled
-along the fibre normal (diffuse) and along the reflection vector (specular), which is a
-closed-form stand-in for a prefiltered cubemap.
+The single-scattering term is the Marschner BCSDF, evaluated per fibre in `shaders/hair.frag`:
+
+| BCSDF factor | Implementation |
+| --- | --- |
+| longitudinal `M_p(theta_i, theta_o)` | normalised Gaussian in `theta_o + theta_i - alpha_p` (Marschner Eq. 3); the cuticle tilt is `alpha_R = -0.10`, `alpha_TRT = +0.14`, widths `beta_R = 0.10`, `beta_TRT = 0.20` |
+| azimuthal `N_p(phi)` | von Mises lobe `exp(v (cos phi - 1)) / (2 pi (1 - e^{-2v}))` on `phi_o + phi_i` (the R lobe mirrors about the normal plane); the TRT lobe is shifted by the refraction offset `delta = 0.35` and is wider (`v = 40` versus `180`) |
+| Fresnel | Schlick with the hair dielectric `F0 = 0.046`, applied to `T . H` |
+| geometry | `cos theta_i` (the projected area of the fibre), which is the same `sin(T, L)` the Kajiya-Kay diffuse term uses |
+
+`theta_i` and `theta_o` are the true inclinations of the light and view directions from the plane
+normal to the fibre (not a half-vector proxy), and `phi_i`/`phi_o` are measured in the `(T, u, v)`
+frame of the fibre. The multiple-scattering term is the dual-scattering approximation, and the
+environment is the analytic sky sampled along the fibre normal (diffuse) and along the reflection
+vector (specular), which is a closed-form stand-in for a prefiltered cubemap.
 
 ## 9. Anti-aliasing
 
-`8x MSAA` is honoured by the Vulkan path (the sample count is a `RenderOptions` field and the
-pipelines are created with it), and `shaders/taa.frag` adds a temporal resolve: Halton(2,3)
+`8x MSAA` is hardware MSAA on the Vulkan path: `HairGpuRenderer::setSampleCount()` clamps the
+request to `framebufferColorSampleCounts` / `framebufferDepthSampleCounts`, then rebuilds the three
+main-pass pipelines (head, task/mesh hair, compute-path hair) at that sample count and creates the
+multisampled `RGBA16F` colour and `D32` depth attachments. The HDR pass resolves with
+`VK_RESOLVE_MODE_AVERAGE` into the single-sampled `hdrImage_`, so the shadow map, bloom chain, TAA
+resolve and composite are untouched. `shaders/taa.frag` adds a temporal resolve: Halton(2,3)
 sub-pixel jitter of the projection, reprojection with the previous view-projection, and a 3x3
 neighbourhood clamp on the history so the moving hair does not smear. MSAA and TAA are
 complementary here: MSAA resolves geometric edges but not the alpha-blended strands, TAA
 converges the strands too.
 
-## 10. Shading
+## 10. Compositing and depth ordering
 
-Marschner BCSDF with a Kajiya-Kay fallback, dual scattering approximation for the multiple
-scattering term, PCF shadow map (2048^2), and back-to-front alpha compositing against the opaque
+PCF shadow map (2048^2) and back-to-front alpha compositing against the opaque
 depth buffer. A single depth-tested transparent pass keeps only the front shell, which is exactly
 the artifact the paper attributes to naive hair rendering; the software renderer's `opaqueDepth_`
 buffer and the GPU path's `depthWriteEnable = VK_FALSE` implement the paper's ordering instead.
