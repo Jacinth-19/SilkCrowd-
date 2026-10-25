@@ -126,6 +126,13 @@ public:
 
 private:
     bool createPipelines(std::string* error);
+    // The head/hair pipelines render into the HDR pass and therefore carry the current
+    // sample count; they are rebuilt when the 8x MSAA toggle changes.
+    bool createMainPassPipelines(std::string* error);
+    void destroyMainPassPipelines();
+    bool setSampleCount(int wanted);
+    bool createMsaaTargets();
+    int msaaSamples_ = 1;
     bool createGraphicsPipeline(VkPipeline* out, const char* task, const char* mesh,
                                 const char* vertex, const char* fragment, bool hairBlend,
                                 bool depthOnly, std::string* error);
@@ -217,6 +224,14 @@ private:
     VkImage hdrImage_ = VK_NULL_HANDLE;
     VkDeviceMemory hdrMemory_ = VK_NULL_HANDLE;
     VkImageView hdrView_ = VK_NULL_HANDLE;
+    // Multisampled attachments for the main pass (only when msaaSamples_ > 1); the HDR
+    // image stays single-sampled and receives the resolve.
+    VkImage msaaImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory msaaMemory_ = VK_NULL_HANDLE;
+    VkImageView msaaView_ = VK_NULL_HANDLE;
+    VkImage msaaDepthImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory msaaDepthMemory_ = VK_NULL_HANDLE;
+    VkImageView msaaDepthView_ = VK_NULL_HANDLE;
     VkImage depthImage_ = VK_NULL_HANDLE;
     VkDeviceMemory depthMemory_ = VK_NULL_HANDLE;
     VkImageView depthView_ = VK_NULL_HANDLE;

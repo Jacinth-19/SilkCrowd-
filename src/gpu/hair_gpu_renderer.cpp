@@ -122,6 +122,287 @@ bool HairGpuRenderer::writeSampleDescriptors() {
     return true;
 }
 
+namespace {
+
+// VkSampleCountFlagBits values are bit masks, so they AND directly with the
+// framebufferColorSampleCounts / framebufferDepthSampleCounts device limits.
+VkSampleCountFlagBits sampleCountFlag(int samples) {
+    switch (samples) {
+        case 2: return VK_SAMPLE_COUNT_2_BIT;
+        case 4: return VK_SAMPLE_COUNT_4_BIT;
+        case 8: return VK_SAMPLE_COUNT_8_BIT;
+        case 16: return VK_SAMPLE_COUNT_16_BIT;
+        default: return VK_SAMPLE_COUNT_1_BIT;
+    }
+}
+
+}  // namespace
+
+// The three pipelines that write into the multisampled HDR pass. They are kept apart
+// from createPipelines() because the MSAA sample count can change at run time (the
+// editor's 8x MSAA toggle): changing it only rebuilds these pipelines and the MSAA
+// targets, not the layouts, descriptor sets or the single-sample passes (shadow, bloom,
+// composite, TAA).
+bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
+    VkDevice dev = ctx_->device();
+
+    // ---- hair: task + mesh shader pipeline (preferred) ----
+    if (hasMeshShaders_) {
+        VkShaderModule task = loadShader("hair.task.spv", error);
+        VkShaderModule mesh = loadShader("hair.mesh.spv", error);
+        VkShaderModule frag = loadShader("hair.frag.spv", error);
+        if (task == VK_NULL_HANDLE || mesh == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
+
+        VkPipelineShaderStageCreateInfo stages[3]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_TASK_BIT_EXT;
+        stages[0].module = task;
+        stages[0].pName = "main";
+        stages[1] = stages[0];
+        stages[1].stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+        stages[1].module = mesh;
+        stages[2] = stages[0];
+        stages[2].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[2].module = frag;
+
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &colorFormat;
+        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.blendEnable = VK_TRUE;             // hair is composited source-over
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo blendState{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        blendState.attachmentCount = 1;
+        blendState.pAttachments = &blend;
+
+        VkPipelineDepthStencilStateCreateInfo depth{
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_FALSE;       // hair is transparent: blend, no depth write
+        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = sampleCountFlag(msaaSamples_);
+
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp.viewportCount = 1;
+        vp.scissorCount = 1;
+        VkPipelineVertexInputStateCreateInfo emptyInput{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gp.pNext = &rendering;
+        gp.stageCount = 3;
+        gp.pStages = stages;
+        gp.pVertexInputState = &emptyInput;
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        gp.pInputAssemblyState = &ia;
+        gp.pViewportState = &vp;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE;
+        rs.lineWidth = 1.0f;
+        gp.pRasterizationState = &rs;
+        gp.pMultisampleState = &ms;
+        gp.pDepthStencilState = &depth;
+        gp.pColorBlendState = &blendState;
+        gp.layout = hairPipelineLayout_;
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &hairMeshPipeline_) !=
+            VK_SUCCESS) {
+            if (error) *error = "failed to create the task/mesh hair pipeline";
+            return false;
+        }
+        // Shadow variant of the same pipeline (depth only, light matrix). The shadow map is
+        // single-sampled, unlike the HDR pass this pipeline was built for.
+        VkShaderModule shadowFrag = loadShader("shadow.frag.spv", error);
+        if (shadowFrag == VK_NULL_HANDLE) return false;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        stages[2].module = shadowFrag;
+        rendering.colorAttachmentCount = 0;
+        rendering.pColorAttachmentFormats = nullptr;
+        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        blend.blendEnable = VK_FALSE;
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &shadowHairPipeline_) !=
+            VK_SUCCESS) {
+            if (error) *error = "failed to create the hair shadow pipeline";
+            return false;
+        }
+        vkDestroyShaderModule(dev, task, nullptr);
+        vkDestroyShaderModule(dev, mesh, nullptr);
+        vkDestroyShaderModule(dev, frag, nullptr);
+        vkDestroyShaderModule(dev, shadowFrag, nullptr);
+    }
+
+    // ---- vertex-path hair pipeline (consumes the compute output) ----
+    {
+        VkShaderModule vert = loadShader("hair_draw.vert.spv", error);
+        VkShaderModule frag = loadShader("hair.frag.spv", error);
+        if (vert == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName = "main";
+        stages[1] = stages[0];
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &colorFormat;
+        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.blendEnable = VK_TRUE;
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.colorWriteMask = 0xF;
+        VkPipelineColorBlendStateCreateInfo blendState{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        blendState.attachmentCount = 1;
+        blendState.pAttachments = &blend;
+        VkPipelineDepthStencilStateCreateInfo depth{
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_FALSE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = sampleCountFlag(msaaSamples_);
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp.viewportCount = 1;
+        vp.scissorCount = 1;
+        VkPipelineVertexInputStateCreateInfo emptyInput{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE;
+        rs.lineWidth = 1.0f;
+
+        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gp.pNext = &rendering;
+        gp.stageCount = 2;
+        gp.pStages = stages;
+        gp.pVertexInputState = &emptyInput;
+        gp.pInputAssemblyState = &ia;
+        gp.pViewportState = &vp;
+        gp.pRasterizationState = &rs;
+        gp.pMultisampleState = &ms;
+        gp.pDepthStencilState = &depth;
+        gp.pColorBlendState = &blendState;
+        gp.layout = drawPipelineLayout_;
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &hairDrawPipeline_) !=
+            VK_SUCCESS) {
+            if (error) *error = "failed to create the compute-path draw pipeline";
+            return false;
+        }
+        vkDestroyShaderModule(dev, vert, nullptr);
+        vkDestroyShaderModule(dev, frag, nullptr);
+    }
+
+    // ---- head / teapot ----
+    {
+        VkShaderModule vert = loadShader("head.vert.spv", error);
+        VkShaderModule frag = loadShader("head.frag.spv", error);
+        if (vert == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName = "main";
+        stages[1] = stages[0];
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+
+        VkVertexInputBindingDescription binding{0, 8 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX};
+        VkVertexInputAttributeDescription attrs[3] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+                                                     {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
+                                                     {2, 0, VK_FORMAT_R32G32_SFLOAT, 24}};
+        VkPipelineVertexInputStateCreateInfo input{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        input.vertexBindingDescriptionCount = 1;
+        input.pVertexBindingDescriptions = &binding;
+        input.vertexAttributeDescriptionCount = 3;
+        input.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &colorFormat;
+        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.blendEnable = VK_FALSE;
+        blend.colorWriteMask = 0xF;
+        VkPipelineColorBlendStateCreateInfo blendState{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        blendState.attachmentCount = 1;
+        blendState.pAttachments = &blend;
+        VkPipelineDepthStencilStateCreateInfo depth{
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = sampleCountFlag(msaaSamples_);
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vp.viewportCount = 1;
+        vp.scissorCount = 1;
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_BACK_BIT;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.lineWidth = 1.0f;
+
+        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gp.pNext = &rendering;
+        gp.stageCount = 2;
+        gp.pStages = stages;
+        gp.pVertexInputState = &input;
+        gp.pInputAssemblyState = &ia;
+        gp.pViewportState = &vp;
+        gp.pRasterizationState = &rs;
+        gp.pMultisampleState = &ms;
+        gp.pDepthStencilState = &depth;
+        gp.pColorBlendState = &blendState;
+        gp.layout = headPipelineLayout_;
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &headPipeline_) !=
+            VK_SUCCESS) {
+            if (error) *error = "failed to create the head pipeline";
+            return false;
+        }
+        vkDestroyShaderModule(dev, vert, nullptr);
+        vkDestroyShaderModule(dev, frag, nullptr);
+    }
+
+    return true;
+}
+
+void HairGpuRenderer::destroyMainPassPipelines() {
+    VkDevice dev = ctx_->device();
+    if (dev == VK_NULL_HANDLE) return;
+    VkPipeline* pipelines[] = {&hairMeshPipeline_, &hairDrawPipeline_, &headPipeline_};
+    for (VkPipeline* p : pipelines) {
+        if (*p != VK_NULL_HANDLE) vkDestroyPipeline(dev, *p, nullptr);
+        *p = VK_NULL_HANDLE;
+    }
+}
+
 bool HairGpuRenderer::createPipelines(std::string* error) {
     VkDevice dev = ctx_->device();
 
@@ -294,101 +575,8 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
         SILK_VK_CHECK(vkCreatePipelineLayout(dev, &ci, nullptr, &drawPipelineLayout_));
     }
 
-    // ---- hair: task + mesh shader pipeline (preferred) ----
-    if (hasMeshShaders_) {
-        VkShaderModule task = loadShader("hair.task.spv", error);
-        VkShaderModule mesh = loadShader("hair.mesh.spv", error);
-        VkShaderModule frag = loadShader("hair.frag.spv", error);
-        if (task == VK_NULL_HANDLE || mesh == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
-
-        VkPipelineShaderStageCreateInfo stages[3]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_TASK_BIT_EXT;
-        stages[0].module = task;
-        stages[0].pName = "main";
-        stages[1] = stages[0];
-        stages[1].stage = VK_SHADER_STAGE_MESH_BIT_EXT;
-        stages[1].module = mesh;
-        stages[2] = stages[0];
-        stages[2].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[2].module = frag;
-
-        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &colorFormat;
-        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-
-        VkPipelineColorBlendAttachmentState blend{};
-        blend.blendEnable = VK_TRUE;             // hair is composited source-over
-        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-        VkPipelineColorBlendStateCreateInfo blendState{
-            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        blendState.attachmentCount = 1;
-        blendState.pAttachments = &blend;
-
-        VkPipelineDepthStencilStateCreateInfo depth{
-            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = VK_TRUE;
-        depth.depthWriteEnable = VK_FALSE;       // hair is transparent: blend, no depth write
-        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-        vp.viewportCount = 1;
-        vp.scissorCount = 1;
-        VkPipelineVertexInputStateCreateInfo emptyInput{
-            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-
-        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        gp.pNext = &rendering;
-        gp.stageCount = 3;
-        gp.pStages = stages;
-        gp.pVertexInputState = &emptyInput;
-        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        gp.pInputAssemblyState = &ia;
-        gp.pViewportState = &vp;
-        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rs.polygonMode = VK_POLYGON_MODE_FILL;
-        rs.cullMode = VK_CULL_MODE_NONE;
-        rs.lineWidth = 1.0f;
-        gp.pRasterizationState = &rs;
-        gp.pMultisampleState = &ms;
-        gp.pDepthStencilState = &depth;
-        gp.pColorBlendState = &blendState;
-        gp.layout = hairPipelineLayout_;
-        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &hairMeshPipeline_) !=
-            VK_SUCCESS) {
-            if (error) *error = "failed to create the task/mesh hair pipeline";
-            return false;
-        }
-        // Shadow variant of the same pipeline (depth only, light matrix).
-        VkShaderModule shadowFrag = loadShader("shadow.frag.spv", error);
-        if (shadowFrag == VK_NULL_HANDLE) return false;
-        stages[2].module = shadowFrag;
-        rendering.colorAttachmentCount = 0;
-        rendering.pColorAttachmentFormats = nullptr;
-        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-        depth.depthWriteEnable = VK_TRUE;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        blend.blendEnable = VK_FALSE;
-        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &shadowHairPipeline_) !=
-            VK_SUCCESS) {
-            if (error) *error = "failed to create the hair shadow pipeline";
-            return false;
-        }
-        vkDestroyShaderModule(dev, task, nullptr);
-        vkDestroyShaderModule(dev, mesh, nullptr);
-        vkDestroyShaderModule(dev, frag, nullptr);
-        vkDestroyShaderModule(dev, shadowFrag, nullptr);
-    }
+    // ---- pipelines that render into the (possibly multisampled) HDR pass ----
+    if (!createMainPassPipelines(error)) return false;
 
     // ---- compute fallback ----
     {
@@ -407,152 +595,6 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
             return false;
         }
         vkDestroyShaderModule(dev, comp, nullptr);
-    }
-
-    // ---- vertex-path hair pipeline (consumes the compute output) ----
-    {
-        VkShaderModule vert = loadShader("hair_draw.vert.spv", error);
-        VkShaderModule frag = loadShader("hair.frag.spv", error);
-        if (vert == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
-        VkPipelineShaderStageCreateInfo stages[2]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vert;
-        stages[0].pName = "main";
-        stages[1] = stages[0];
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = frag;
-
-        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &colorFormat;
-        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-
-        VkPipelineColorBlendAttachmentState blend{};
-        blend.blendEnable = VK_TRUE;
-        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        blend.colorWriteMask = 0xF;
-        VkPipelineColorBlendStateCreateInfo blendState{
-            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        blendState.attachmentCount = 1;
-        blendState.pAttachments = &blend;
-        VkPipelineDepthStencilStateCreateInfo depth{
-            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = VK_TRUE;
-        depth.depthWriteEnable = VK_FALSE;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-        vp.viewportCount = 1;
-        vp.scissorCount = 1;
-        VkPipelineVertexInputStateCreateInfo emptyInput{
-            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rs.polygonMode = VK_POLYGON_MODE_FILL;
-        rs.cullMode = VK_CULL_MODE_NONE;
-        rs.lineWidth = 1.0f;
-
-        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        gp.pNext = &rendering;
-        gp.stageCount = 2;
-        gp.pStages = stages;
-        gp.pVertexInputState = &emptyInput;
-        gp.pInputAssemblyState = &ia;
-        gp.pViewportState = &vp;
-        gp.pRasterizationState = &rs;
-        gp.pMultisampleState = &ms;
-        gp.pDepthStencilState = &depth;
-        gp.pColorBlendState = &blendState;
-        gp.layout = drawPipelineLayout_;
-        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &hairDrawPipeline_) !=
-            VK_SUCCESS) {
-            if (error) *error = "failed to create the compute-path draw pipeline";
-            return false;
-        }
-        vkDestroyShaderModule(dev, vert, nullptr);
-        vkDestroyShaderModule(dev, frag, nullptr);
-    }
-
-    // ---- head / teapot ----
-    {
-        VkShaderModule vert = loadShader("head.vert.spv", error);
-        VkShaderModule frag = loadShader("head.frag.spv", error);
-        if (vert == VK_NULL_HANDLE || frag == VK_NULL_HANDLE) return false;
-        VkPipelineShaderStageCreateInfo stages[2]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vert;
-        stages[0].pName = "main";
-        stages[1] = stages[0];
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = frag;
-
-        VkVertexInputBindingDescription binding{0, 8 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX};
-        VkVertexInputAttributeDescription attrs[3] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
-                                                     {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
-                                                     {2, 0, VK_FORMAT_R32G32_SFLOAT, 24}};
-        VkPipelineVertexInputStateCreateInfo input{
-            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        input.vertexBindingDescriptionCount = 1;
-        input.pVertexBindingDescriptions = &binding;
-        input.vertexAttributeDescriptionCount = 3;
-        input.pVertexAttributeDescriptions = attrs;
-
-        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &colorFormat;
-        rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-
-        VkPipelineColorBlendAttachmentState blend{};
-        blend.blendEnable = VK_FALSE;
-        blend.colorWriteMask = 0xF;
-        VkPipelineColorBlendStateCreateInfo blendState{
-            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        blendState.attachmentCount = 1;
-        blendState.pAttachments = &blend;
-        VkPipelineDepthStencilStateCreateInfo depth{
-            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = VK_TRUE;
-        depth.depthWriteEnable = VK_TRUE;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS;
-        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-        vp.viewportCount = 1;
-        vp.scissorCount = 1;
-        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rs.polygonMode = VK_POLYGON_MODE_FILL;
-        rs.cullMode = VK_CULL_MODE_BACK_BIT;
-        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        rs.lineWidth = 1.0f;
-
-        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        gp.pNext = &rendering;
-        gp.stageCount = 2;
-        gp.pStages = stages;
-        gp.pVertexInputState = &input;
-        gp.pInputAssemblyState = &ia;
-        gp.pViewportState = &vp;
-        gp.pRasterizationState = &rs;
-        gp.pMultisampleState = &ms;
-        gp.pDepthStencilState = &depth;
-        gp.pColorBlendState = &blendState;
-        gp.layout = headPipelineLayout_;
-        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &headPipeline_) !=
-            VK_SUCCESS) {
-            if (error) *error = "failed to create the head pipeline";
-            return false;
-        }
-        vkDestroyShaderModule(dev, vert, nullptr);
-        vkDestroyShaderModule(dev, frag, nullptr);
     }
 
     // ---- bloom + composite (fullscreen) ----
@@ -1199,6 +1241,12 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         height_ != static_cast<uint32_t>(options.height))
         resize(static_cast<uint32_t>(options.width), static_cast<uint32_t>(options.height));
 
+    // MSAA: changing the toggle rebuilds the main-pass pipelines and the multisampled
+    // attachments; unsupported counts are clamped to what the device can resolve.
+    if (options.msaa != msaaSamples_ && !setSampleCount(options.msaa))
+        stats_.warning = "MSAA " + std::to_string(options.msaa) + "x is not supported here; " +
+                         "rendering at " + std::to_string(msaaSamples_) + "x";
+
     // ---- temporal AA: advance the sub-pixel jitter, then use one jittered projection for
     // the whole frame (geometry, light matrices, resolve).
     taaEnabled_ = options.taa;
@@ -1315,7 +1363,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
                                     VK_IMAGE_ASPECT_DEPTH_BIT);
     }
 
-    // ---- main HDR pass ----
+    // ---- main HDR pass (multisampled when MSAA is on, resolved into hdrImage_) ----
     ctx_->imageLayoutTransition(commandBuffer_, hdrImage_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1332,9 +1380,27 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depth.clearValue.depthStencil = {1.0f, 0};
 
-    ctx_->imageLayoutTransition(commandBuffer_, depthImage_, VK_IMAGE_LAYOUT_UNDEFINED,
-                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                VK_IMAGE_ASPECT_DEPTH_BIT);
+    const bool multisampled = msaaSamples_ > 1 && msaaView_ != VK_NULL_HANDLE &&
+                              msaaDepthView_ != VK_NULL_HANDLE;
+    if (multisampled) {
+        // Contents of the MSAA targets are always fully cleared, so UNDEFINED is the
+        // cheapest valid source layout (the same idiom the depth image uses).
+        ctx_->imageLayoutTransition(commandBuffer_, msaaImage_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_ASPECT_COLOR_BIT);
+        ctx_->imageLayoutTransition(commandBuffer_, msaaDepthImage_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_ASPECT_DEPTH_BIT);
+        color.imageView = msaaView_;
+        color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+        color.resolveImageView = hdrView_;
+        color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        depth.imageView = msaaDepthView_;
+    } else {
+        ctx_->imageLayoutTransition(commandBuffer_, depthImage_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
     ri.renderArea = {{0, 0}, {width_, height_}};
     ri.layerCount = 1;
@@ -1470,7 +1536,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
 
     stats_.frameMs = std::chrono::duration<double, std::milli>(clock::now() - start).count();
     stats_.crowdCount = static_cast<int>(models_.size());
-    stats_.msaa = options.msaa;
+    stats_.msaa = msaaSamples_;
     stats_.meshShaderPath = hasMeshShaders_;
     stats_.taa = taaEnabled_;
     return true;
@@ -1746,6 +1812,77 @@ bool HairGpuRenderer::createDescriptorLayouts(std::string* error) {
 // =============================================================================
 //  Render targets
 // =============================================================================
+// =============================================================================
+//  MSAA (the paper renders with 8x MSAA; the toggle is exposed in the CLI and the
+//  editor). Only the main HDR pass is multisampled: the shadow map, bloom chain,
+//  TAA resolve and composite stay single-sampled, and hdrImage_ receives the resolve.
+// =============================================================================
+bool HairGpuRenderer::createMsaaTargets() {
+    if (msaaImage_ != VK_NULL_HANDLE) ctx_->destroyImage(msaaImage_, msaaMemory_, msaaView_);
+    if (msaaDepthImage_ != VK_NULL_HANDLE)
+        ctx_->destroyImage(msaaDepthImage_, msaaDepthMemory_, msaaDepthView_);
+    msaaImage_ = VK_NULL_HANDLE;
+    msaaMemory_ = VK_NULL_HANDLE;
+    msaaView_ = VK_NULL_HANDLE;
+    msaaDepthImage_ = VK_NULL_HANDLE;
+    msaaDepthMemory_ = VK_NULL_HANDLE;
+    msaaDepthView_ = VK_NULL_HANDLE;
+    if (msaaSamples_ <= 1 || !ctx_) return true;
+
+    const VkSampleCountFlagBits samples = sampleCountFlag(msaaSamples_);
+    msaaImage_ = ctx_->createImage2D(width_, height_, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                     VK_IMAGE_ASPECT_COLOR_BIT, &msaaMemory_, &msaaView_, samples);
+    if (msaaImage_ == VK_NULL_HANDLE) return false;
+    msaaDepthImage_ = ctx_->createImage2D(width_, height_, VK_FORMAT_D32_SFLOAT,
+                                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                          VK_IMAGE_ASPECT_DEPTH_BIT, &msaaDepthMemory_,
+                                          &msaaDepthView_, samples);
+    return msaaDepthImage_ != VK_NULL_HANDLE;
+}
+
+bool HairGpuRenderer::setSampleCount(int wanted) {
+    if (!ctx_) return false;
+    if (wanted < 1) wanted = 1;
+
+    // Clamp to what this device can actually resolve for colour and depth.
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(ctx_->physicalDevice(), &props);
+    int chosen = 1;
+    for (const int candidate : {8, 4, 2}) {
+        if (candidate > wanted) continue;
+        const VkSampleCountFlagBits bits = sampleCountFlag(candidate);
+        if ((props.limits.framebufferColorSampleCounts & bits) &&
+            (props.limits.framebufferDepthSampleCounts & bits)) {
+            chosen = candidate;
+            break;
+        }
+    }
+    if (chosen == msaaSamples_) return chosen == wanted;
+
+    vkDeviceWaitIdle(ctx_->device());
+    destroyMainPassPipelines();
+    const int previous = msaaSamples_;
+    msaaSamples_ = chosen;
+    if (!createMsaaTargets()) {
+        msaaSamples_ = 1;
+        createMsaaTargets();
+    }
+    std::string error;
+    if (!createMainPassPipelines(&error)) {
+        stats_.warning = "could not build the " + std::to_string(msaaSamples_) +
+                         "x MSAA pipelines (" + error + "); falling back to 1x";
+        destroyMainPassPipelines();
+        msaaSamples_ = 1;
+        createMsaaTargets();
+        createMainPassPipelines(nullptr);
+        return false;
+    }
+    (void)previous;
+    return msaaSamples_ == wanted;
+}
+
 bool HairGpuRenderer::createRenderTargets() {
     auto destroyIfAny = [&](VkImage& img, VkDeviceMemory& mem, VkImageView& view) {
         if (img != VK_NULL_HANDLE) ctx_->destroyImage(img, mem, view);
@@ -1758,6 +1895,7 @@ bool HairGpuRenderer::createRenderTargets() {
     destroyIfAny(bloomImage_, bloomMemory_, bloomView_);
     destroyIfAny(shadowImage_, shadowMemory_, shadowView_);
     destroyIfAny(ldrImage_, ldrMemory_, ldrView_);
+    if (!createMsaaTargets()) return false;
 
     hdrImage_ = ctx_->createImage2D(width_, height_, VK_FORMAT_R16G16B16A16_SFLOAT,
                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -2100,6 +2238,8 @@ void HairGpuRenderer::shutdown() {
     if (descriptorPool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(dev, descriptorPool_, nullptr);
     descriptorPool_ = VK_NULL_HANDLE;
 
+    ctx_->destroyImage(msaaImage_, msaaMemory_, msaaView_);
+    ctx_->destroyImage(msaaDepthImage_, msaaDepthMemory_, msaaDepthView_);
     ctx_->destroyImage(hdrImage_, hdrMemory_, hdrView_);
     ctx_->destroyImage(bloomImage_, bloomMemory_, bloomView_);
     ctx_->destroyImage(depthImage_, depthMemory_, depthView_);
@@ -2108,6 +2248,9 @@ void HairGpuRenderer::shutdown() {
     ctx_->destroyImage(historyImage_, historyMemory_, historyView_);
     hdrImage_ = bloomImage_ = depthImage_ = shadowImage_ = resolvedImage_ = historyImage_ =
         VK_NULL_HANDLE;
+    msaaImage_ = msaaDepthImage_ = VK_NULL_HANDLE;
+    msaaMemory_ = msaaDepthMemory_ = VK_NULL_HANDLE;
+    msaaView_ = msaaDepthView_ = VK_NULL_HANDLE;
 
     const std::pair<VkBuffer, VkDeviceMemory> owned[] = {
         {sampleBuffer_, sampleMemory_},

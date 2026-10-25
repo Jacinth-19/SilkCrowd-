@@ -35,11 +35,10 @@ int runGpuScreenshot(const GpuAppOptions& o, std::string* error) {
     if (!context.init(VK_NULL_HANDLE, VK_NULL_HANDLE, o.validation, error)) return 1;
 
     HairGpuRenderer renderer;
-    // Snapshots are single images, so MSAA is handled by supersampling the render target
-    // when the requested sample count is above one.
-    const uint32_t renderWidth = static_cast<uint32_t>(o.width) * (o.msaa > 1 ? 1u : 1u);
-    if (!renderer.init(&context, renderWidth, static_cast<uint32_t>(o.height), o.validation,
-                       error)) {
+    // The offscreen target is created at the requested size; MSAA is resolved by the
+    // renderer itself (multisampled main pass -> single-sampled HDR resolve target).
+    if (!renderer.init(&context, static_cast<uint32_t>(o.width), static_cast<uint32_t>(o.height),
+                       o.validation, error)) {
         renderer.shutdown();
         context.shutdown();
         return 1;

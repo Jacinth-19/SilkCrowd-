@@ -672,6 +672,9 @@ void runBench(const Args& a) {
     Camera cam = (a.scene == "crowd") ? crowdCamera(a.width, a.height)
                  : (a.scene == "teapot") ? teapotCamera(a.width, a.height)
                                          : headCamera(a.width, a.height);
+    if (a.msaa > 1)
+        std::printf("note: --msaa is a Vulkan feature; the software renderer supersamples "
+                    "instead (use --ssaa %d)\n", a.ssaa < 2 ? 2 : a.ssaa);
     RenderOptions opt;
     opt.width = a.width;
     opt.height = a.height;
@@ -753,6 +756,9 @@ void runScreenshot(const Args& a) {
                     error.c_str());
     }
 
+    if (a.msaa > 1)
+        std::printf("note: --msaa is a Vulkan feature; the software renderer supersamples "
+                    "instead (use --ssaa %d)\n", a.ssaa < 2 ? 2 : a.ssaa);
     RenderOptions opt;
     opt.width = a.width;
     opt.height = a.height;
