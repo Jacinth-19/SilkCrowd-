@@ -1,0 +1,96 @@
+// =============================================================================
+//  SilkCrowd - hair.task
+//  Bundle-level parallelism (Section 3.2): one task-shader workgroup per bundle chunk.
+//
+//  The task shader decides *how many* strands its bundle generates -- applying culling
+//  and the strand LOD of Eq. 7 / Eq. 8 -- and then spawns one mesh-shader instance per
+//  strand. It also computes the vertex LOD exponent (Eq. 9) once per bundle and forwards
+//  it in the task payload, so the mesh shader does not repeat that work.
+//
+//  A Vulkan workgroup may call EmitMeshTasksEXT exactly once, so:
+//    * one workgroup owns one bundle chunk,
+//    * a bundle whose strand count exceeds MAX_TASKS_PER_WORKGROUP is covered by
+//      several chunks; the CPU pre-pass ("Option A" of Section 3.2) sizes the draw from
+//      the model's maximum authored strand count, and empty chunks emit zero tasks.
+// =============================================================================
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "hair_common.glsl"
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+// Per-bundle precomputed data, uploaded once per hair model:
+//   .x = bundle scalp face size (h of Eq. 7), .y = authored strand count,
+//   .z = bundle length (h of the vertex LOD), .w = unused
+layout(std430, set = 2, binding = 0) readonly buffer BundleData {
+    vec4 bundles[];
+} bundleData;
+
+layout(push_constant) uniform PushConstants {
+    uint chunksPerBundle;   // = ceil(maxAuthoredStrands / MAX_TASKS_PER_WORKGROUP)
+    uint tasksPerChunk;     // = MAX_TASKS_PER_WORKGROUP
+    uint frameIndex;
+    uint flags;
+} pc;
+
+#define MAX_TASKS_PER_WORKGROUP 32u
+
+struct TaskPayload {
+    uint bundle;
+    uint strandBase;
+    uint numStrands;
+    uint vertexExponent;
+    float gamma;
+    float thicknessScale;
+};
+taskPayloadSharedEXT TaskPayload payload;
+
+void main() {
+    // Only the first lane emits; the remaining lanes of the wavefront are kept for the
+    // per-strand setup work that the mesh shader performs for this bundle.
+    if (gl_LocalInvocationID.x != 0u) return;
+
+    uint chunks = max(pc.chunksPerBundle, 1u);
+    uint bundle = gl_WorkGroupID.x / chunks;
+    uint chunk = gl_WorkGroupID.x % chunks;
+    uint numBundles = uint(model.blocks.w);
+    if (bundle >= numBundles) {
+        EmitMeshTasksEXT(0u, 1u, 1u);
+        return;
+    }
+
+    vec3 bundleCenter = (model.model * vec4(bundleData.bundles[bundle].yz, 0.0, 1.0)).xyz;
+    float bundleSize = bundleData.bundles[bundle].x;
+    uint authored = uint(max(bundleData.bundles[bundle].y, 1.0));
+
+    // ---- Eq. 7 with h = the bundle's scalp face size ----
+    float distance = max(length(model.cameraPos.xyz - bundleCenter) - bundleSize * 0.5, 1e-3);
+    float L = detailLevel(bundleSize, distance * model.lodParams.w, model.lodParams.x);
+
+    // ---- Eq. 8: N_LOD_i = ceil(L (N_i + delta_i)) ----
+    uint numStrands = strandCountLod(authored, bundleDelta(bundle, uint(model.hairParams.x)), L);
+
+    // ---- vertex LOD (Eq. 9) shared with every strand of this bundle ----
+    float strandLength = max(bundleData.bundles[bundle].z, 1e-3);
+    float Lv = detailLevel(strandLength, distance * model.lodParams.w, model.lodParams.y);
+    uint exponent = vertexLodExponent(Lv, 32u);
+
+    uint chunkStart = chunk * pc.tasksPerChunk;
+    uint count = numStrands > chunkStart ? min(pc.tasksPerChunk, numStrands - chunkStart) : 0u;
+
+    // Eq. 10 / Eq. 12: the morph factor is a per-bundle quantity, forwarded so that the
+    // whole strand set of this bundle morphs consistently.
+    float LvExact = detailLevel(strandLength, distance * model.lodParams.w, model.lodParams.y);
+    float lambda = model.lodParams.z;
+    payload.bundle = bundle;
+    payload.strandBase = chunkStart;
+    payload.numStrands = count;
+    payload.vertexExponent = exponent;
+    payload.gamma = vertexMorphGamma(LvExact, 32u, lambda);
+    // Section 3.6.1: increase the thickness by min(1/L, N) to compensate for the removed
+    // strands. Deliberately not synchronised with the discrete strand-count changes.
+    payload.thicknessScale = min(1.0 / max(L, 1e-3), float(authored));
+    EmitMeshTasksEXT(count, 1u, 1u);
+}
