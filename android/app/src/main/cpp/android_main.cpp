@@ -82,7 +82,7 @@ bool stageAssets(android_app* app) {
 bool intentBool(android_app* app, const char* key, bool fallback) {
     JNIEnv* env = nullptr;
     app->activity->vm->AttachCurrentThread(&env, nullptr);
-    jobject activity = app->activity->clazz;
+    jobject activity = static_cast<jobject>(app->activity->clazz);
     jclass cls = env->GetObjectClass(activity);
     jmethodID getIntent = env->GetMethodID(cls, "getIntent", "()Landroid/content/Intent;");
     jobject intent = getIntent ? env->CallObjectMethod(activity, getIntent) : nullptr;
@@ -103,7 +103,7 @@ bool intentBool(android_app* app, const char* key, bool fallback) {
 int intentInt(android_app* app, const char* key, int fallback) {
     JNIEnv* env = nullptr;
     app->activity->vm->AttachCurrentThread(&env, nullptr);
-    jobject activity = app->activity->clazz;
+    jobject activity = static_cast<jobject>(app->activity->clazz);
     jclass cls = env->GetObjectClass(activity);
     jmethodID getIntent = env->GetMethodID(cls, "getIntent", "()Landroid/content/Intent;");
     jobject intent = getIntent ? env->CallObjectMethod(activity, getIntent) : nullptr;
@@ -132,8 +132,10 @@ struct AppState {
     VkExtent2D extent{0, 0};
     std::vector<VkImage> images;
     std::vector<VkImageView> views;
-    VkSemaphore acquireSem = VK_NULL_HANDLE;
-    VkSemaphore presentSem = VK_NULL_HANDLE;
+    // Orbit camera state; touch drag drives it.
+    float yaw = 0.35f;
+    float pitch = 0.42f;
+    float dist = 2.6f;
     bool headless = false;
     float seconds = 0.0f;
     float time = 0.0f;
@@ -240,9 +242,6 @@ bool initVulkan(android_app* app, AppState* s) {
         LOGE("VulkanContext::init failed: %s", error.c_str());
         return false;
     }
-    VkSemaphoreCreateInfo sem{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    vkCreateSemaphore(s->context.device(), &sem, nullptr, &s->acquireSem);
-    vkCreateSemaphore(s->context.device(), &sem, nullptr, &s->presentSem);
     return true;
 }
 
@@ -275,23 +274,34 @@ bool initRenderer(android_app* app, AppState* s) {
 void renderFrame(AppState* s, float dt, bool headless) {
     if (!s->renderer || !s->scene) return;
     Camera cam = crowdCamera(1280, 720);
-    cam.position = Vec3(1.15f * std::cos(s->time * 0.15f), 1.1f,
-                        1.15f * std::sin(s->time * 0.15f) + 1.9f);
-    cam.target = Vec3(0.0f, 0.45f, 0.0f);
+    // Orbit around the crowd: yaw/pitch/dist are driven by touch drag.
+    const Vec3 pivot(0.0f, 0.45f, 0.0f);
+    const float cp = std::cos(s->pitch);
+    cam.position = pivot + Vec3(s->dist * cp * std::sin(s->yaw), s->dist * std::sin(s->pitch),
+                                s->dist * cp * std::cos(s->yaw));
+    cam.target = pivot;
     RenderOptions opt;
     opt.width = static_cast<int>(s->extent.width ? s->extent.width : 1280);
     opt.height = static_cast<int>(s->extent.height ? s->extent.height : 720);
     opt.enableLod = true;
     opt.drawShadows = true;
     s->renderer->applyHardwarePolicy(s->context.info(), &opt);
+    // Rotation and multi-window changes re-create the swapchain; the offscreen targets have
+    // to follow the new extent.
+    if (s->extent.width && s->extent.height)
+        s->renderer->resize(s->extent.width, s->extent.height);
     (void)dt;
 
     if (headless) {
         s->renderer->renderFrame(cam, opt, std::string());
         return;
     }
+    // renderToSwapchainImage records the composite into the acquired image and waits for
+    // the GPU before returning, so presentation needs no semaphore: by the time the image
+    // is handed to vkQueuePresentKHR the writes are complete.
+    if (s->swapchain == VK_NULL_HANDLE) return;
     uint32_t index = 0;
-    if (vkAcquireNextImageKHR(s->context.device(), s->swapchain, UINT64_MAX, s->acquireSem,
+    if (vkAcquireNextImageKHR(s->context.device(), s->swapchain, UINT64_MAX, VK_NULL_HANDLE,
                               VK_NULL_HANDLE, &index) != VK_SUCCESS)
         return;
     // The composite pass writes through an externally supplied view, so it has to follow the
@@ -302,8 +312,8 @@ void renderFrame(AppState* s, float dt, bool headless) {
                                              s->extent.height, cam, opt))
         return;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &s->presentSem;
+    pi.waitSemaphoreCount = 0;
+    pi.pWaitSemaphores = nullptr;
     pi.swapchainCount = 1;
     pi.pSwapchains = &s->swapchain;
     pi.pImageIndices = &index;
@@ -357,8 +367,12 @@ void android_main(android_app* app) {
                 g_app->dragY = y;
             } else if ((action & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_MOVE &&
                        g_app->dragging) {
-                // Touch drag orbits the camera; the hair simulation reacts to the drag
-                // point in the same way the desktop editor does.
+                // Touch drag orbits the camera around the crowd.
+                const float dx = x - g_app->dragX;
+                const float dy = y - g_app->dragY;
+                g_app->yaw -= dx * 0.006f;
+                g_app->pitch = g_app->pitch + dy * 0.005f;
+                g_app->pitch = std::min(std::max(g_app->pitch, -0.2f), 1.35f);
                 g_app->dragX = x;
                 g_app->dragY = y;
             } else {

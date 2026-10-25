@@ -107,14 +107,58 @@ void HairMeshSimulator::computeSagFreeRest(const HairMesh& mesh, const SimParams
     p.windStrength = 0.0f;
     p.drag = 0.6f;
     p.linearDamping = 4.0f;
+    // The shape-memory constraint anchors vertices to restShape_, which during this pass
+    // is still the authored shape. Leaving it on would make the relaxation a no-op (the
+    // solver would be pulled straight back to the shape it is meant to replace); the
+    // equilibrium has to be found under gravity with only the stretch and bending
+    // constraints active.
+    p.sagFreeBlend = 0.0f;
     relax.init(mesh, p);
     // Start from the authored shape and let gravity settle it.
     const float dt = 1.0f / 120.0f;
     HairMesh work = mesh;
+    // Relax until the shape actually stops moving: a fixed iteration count leaves a
+    // residual creep, and that residual would come straight back as the initial drop
+    // this pass exists to remove.
     for (int i = 0; i < iterations; ++i) {
+        std::vector<Vec3> before;
+        before.reserve(static_cast<size_t>(numLayers_) * numVertices_);
+        for (uint32_t l = 0; l < numLayers_; ++l)
+            for (uint32_t v = 0; v < numVertices_; ++v) before.push_back(work.layerVertex(l, v));
         relax.step(&work, dt, p);
         relax.step(&work, dt, p);
+        float moved = 0.0f;
+        size_t k = 0;
+        for (uint32_t l = 0; l < numLayers_; ++l)
+            for (uint32_t v = 0; v < numVertices_; ++v, ++k)
+                moved += length(work.layerVertex(l, v) - before[k]);
+        if (!before.empty()) moved /= static_cast<float>(before.size());
+        if (moved < 1e-6f) break;
     }
+    // Second phase: the gravity-only pass above finds where the shape *wants* to hang, but
+    // a compliant constraint set creeps under gravity forever, so that shape is not yet a
+    // fixed point of the solver that will actually run. Iterate rest shape -> settle with
+    // the full force model (shape memory anchored to the current rest) -> re-derive, which
+    // converges on a shape the simulation does not move at all.
+    {
+        SimParams p2 = params;
+        p2.windStrength = 0.0f;
+        HairMesh work2 = work;
+        for (int outer = 0; outer < 16; ++outer) {
+            for (uint32_t l = 0; l < numLayers_; ++l)
+                for (uint32_t v = 0; v < numVertices_; ++v) {
+                    const size_t k = static_cast<size_t>(l) * numVertices_ + v;
+                    restShape_[k] = work2.layerVertex(l, v);
+                    position_[k] = restShape_[k];
+                    velocity_[k] = Vec3(0, 0, 0);
+                }
+            for (DistanceConstraint& c : stretch_) c.rest = length(restShape_[c.b] - restShape_[c.a]);
+            for (DistanceConstraint& c : bending_) c.rest = length(restShape_[c.b] - restShape_[c.a]);
+            for (int i = 0; i < 64; ++i) step(&work2, dt, p2);
+        }
+        work = work2;
+    }
+
     // Store the settled shape as the new rest shape for this simulator.
     for (uint32_t l = 0; l < numLayers_; ++l)
         for (uint32_t v = 0; v < numVertices_; ++v) {

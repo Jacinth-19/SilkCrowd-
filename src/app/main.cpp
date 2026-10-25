@@ -539,7 +539,7 @@ void validateSimulation(Report& r) {
         p.windStrength = wind;
         HairMeshSimulator sim;
         sim.init(mesh, p);
-        if (sagFree) sim.computeSagFreeRest(mesh, p, 80);
+        if (sagFree) sim.computeSagFreeRest(mesh, p, 200);
         for (int f = 0; f < frames; ++f) sim.step(&mesh, 1.0f / 60.0f, p);
         double d = 0.0;
         int n = 0;
@@ -550,7 +550,6 @@ void validateSimulation(Report& r) {
                 ++n;
             }
         *meanDisp = static_cast<float>(d / std::max(n, 1));
-        *st = sim.stats();
     };
 
     float dSag = 0, dNoSag = 0, dWind10 = 0, dWind20 = 0;

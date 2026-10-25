@@ -118,16 +118,17 @@ devices (see the per-platform table at the end).
 
 | Workload | Strands defined | Strands rendered with LOD | Triangles | Texture storage |
 | --- | --- | --- | --- | --- |
-| Hero head (Figure 10 style) | 39,930 | 20,567 (51.5 %) | 1,316,288 | 0.09 MB |
-| Crowd, 100 heads (Figure 1) | 9,998,570 | 692,501 (6.9 %) | 40,293,504 | **1.61 MB** (14.1-19.1 KB/model) |
+| Hero head (Figure 10 style) | 39,930 | 23,290 (58.3 %) | 1,490,560 | 0.09 MB |
+| Crowd, 100 heads (Figure 1) | 9,998,570 | 743,558 (7.4 %) | 40,733,248 | **1.61 MB** (14.1-19.1 KB/model) |
 | 200 teapots x 50k (Figure 9) | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB (7.7 KB/model) |
 
-Scene build (hair mesh + all five textures for every model) takes 9.2 ms for one head,
-21.1 ms for the 100-head crowd and 13.5 ms for the 200 teapots.
+Scene build (hair mesh + all five textures for every model) takes 0.26 s for the hero head -
+almost all of it the anatomical head surface, which is evaluated analytically per vertex - 0.32 s
+for the 100-head crowd and 10 ms for the 200 teapots. It happens once, at load time.
 
 Rendered-strand fractions grow with resolution and shrink with distance, which is exactly what
 Eq. 7 predicts (`L` is proportional to the vertical resolution `R` and inverse to the distance):
-the same crowd at 800x460 renders 1,060,779 strands (10.6 %) and 67,365,280 triangles, and the
+the same crowd at 800x460 renders 1,139,060 strands (11.4 %) and 72,019,936 triangles, and the
 200 teapots at 800x460 render 1,571,716 strands (15.7 %) and 62,420,992 triangles. The hero head
 sits closest to the camera, which is why it keeps half of its strands.
 
@@ -191,8 +192,14 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   approximation stands in for the strands LOD removed, and PCF shadows come from a 2048^2 depth
   map. Hair is composited back-to-front against the opaque depth buffer (a single depth-tested
   pass keeps only the front shell - that is Figure 4a's artifact).
-* **Head / body / teapot**: per-vertex shading with a skin profile, procedural eyes (sclera,
-  iris, pupil) and lips in the software path.
+* **Head / body / teapot**: the face is shaded from **analytical masks** evaluated in head-local
+  space (`headFaceMasks`: brows, vermilion, stomion, nostrils, nose dorsum and side walls,
+  nasolabial and lip creases, sockets, blush, jaw AO). The same masks are evaluated by the software
+  rasteriser (`shadeSkin`) and by `shaders/head.frag`, so the two paths shade a face identically;
+  the hair-root colour streaking, per-strand dye jitter (0.80-1.22x value) and lightened flyaway
+  strands are in both. Eyes are analytic too: an almond palpebral fissure 30x10 mm, iris/limbal
+  ring/pupil on an 11.8 mm globe, individual tapered lashes and two catchlights. The head itself is
+  **procedural geometry** (`HeadModel::surfacePoint`) - see the note at the end of this section.
 * **Image-based lighting**: the sky gradient is sampled along the fibre normal for the diffuse
   term and along the reflection vector for the specular environment term (the "angel ring"
   highlight); the sun's aureole enters both.
@@ -209,7 +216,24 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   MSAA are independent: MSAA cannot anti-alias the alpha-blended hair shell, TAA converges it
   over frames. (The software renderer has no MSAA - it supersamples with `--ssaa`.)
 * **Simulation**: XPBD stretch/bending/shape-matching constraints, head-sphere collision with
-  friction, turbulent wind as drag toward a moving air velocity, mouse drag.
+  friction, turbulent wind as drag toward a moving air velocity, mouse drag. The sag-free rest shape
+  is found by iterating *settle under gravity -> adopt as rest -> settle with the full force model*
+  until the shape is a fixed point of the solver (a single relaxation pass cannot do it, because a
+  compliant constraint set creeps under gravity forever); `--validate` measures the first-frame drop
+  with and without it.
+
+### What this is not
+
+The **head is not a scanned or downloaded asset**. There was no network access to an anatomical
+head model when this was written, so `HeadModel` is a parametric surface: an ellipsoid deformed by
+~40 anatomical landmarks (glabella, nasion, subnasale, stomion, menton, gonial angle, zygomatic
+arch, ...), tessellated non-uniformly so the face gets 3x the sample density of the scalp, with ears
+appended analytically. It reads as a stylised mannequin, not as a photoreal portrait - the skin
+model, the mask set and the eye model are individually plausible, but the silhouette and the
+mid-face planes are approximations, and that is the honest limit of a procedural head. Dropping in a
+real head is a mesh swap: `HeadModel` only has to provide `surfacePoint(theta, phi)`, `hairlinePhi`,
+`defaultPatch` and the meshes, all of which a loaded glTF skin could supply instead
+(`assets/heads/female_head.gltf` is an export of this same procedural mesh, not a scan).
 
 ---
 

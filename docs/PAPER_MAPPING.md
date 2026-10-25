@@ -154,6 +154,21 @@ frame of the fibre. The multiple-scattering term is the dual-scattering approxim
 environment is the analytic sky sampled along the fibre normal (diffuse) and along the reflection
 vector (specular), which is a closed-form stand-in for a prefiltered cubemap.
 
+### Skin, face masks and eyes (both renderers)
+
+The head is not part of the paper, so its shading is documented here to keep the two renderers in
+step. `headFaceMasks(localPos)` in `src/core/assets.cpp` inverts the head parameterisation
+(`theta = atan2(x, z)`, `phi = acos(y / 0.104)`) and evaluates a band/Gaussian mask for brows,
+vermilion, stomion line, nostrils, the nose dorsum and side walls, the nasolabial fold, the lip
+seam, the socket, the cheek hollow, the temple and under the jaw. `software_renderer.cpp::
+shadeSkin` and `shaders/head.frag::shadeSkin` implement the same model from the same constants:
+wrapped diffuse with a red terminator, a two-lobe specular, a warm key / cool fill / rim rig,
+0.72x AO from the masks, and a high-frequency streak pattern for the eyebrows. The draw kind is
+carried in the sign of the head push constant's `w` (`-1` skin with masks, `-2` eyeball), so the
+Vulkan path draws the eyes too. `shadeEye` builds the palpebral fissure analytically (an almond
+`|h|/0.575`, `|v - 0.10 h side|/0.255`, exponent 1.7), the iris/limbal ring/pupil on an 11.8 mm
+globe, a lash fan with per-lash length jitter on both lids, a crease and two catchlights.
+
 ## 9. Anti-aliasing
 
 `8x MSAA` is hardware MSAA on the Vulkan path: `HairGpuRenderer::setSampleCount()` clamps the

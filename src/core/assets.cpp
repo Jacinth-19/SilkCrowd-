@@ -35,6 +35,7 @@ void Mesh::computeNormals() {
 // =============================================================================
 HeadModel::HeadModel() {
     buildHead();
+    buildHeadLow();
     buildBody();
     buildEyes();
 }
@@ -46,13 +47,13 @@ void HeadModel::buildEyes() {
     eyes_.uvs.clear();
     eyes_.indices.clear();
     for (int side = -1; side <= 1; side += 2) {
-        const float theta = 0.38f * static_cast<float>(side);
-        const float phi = 1.14f;
+        const float theta = 0.40f * static_cast<float>(side);
+        const float phi = 1.55f;
         // Seated in the eye socket: the socket is 7.5 mm deep, so an eyeball of radius
         // 11.5 mm placed 6 mm behind the (deformed) surface leaves the cornea proud of the
         // socket without looking like a bug eye.
         const Vec3 c = surfacePoint(theta, phi) - surfaceNormal(theta, phi) * 0.0042f;
-        const float r = 0.0122f;
+        const float r = 0.0118f;
         const int nu = 20, nv = 14;
         const uint32_t base = static_cast<uint32_t>(eyes_.positions.size());
         for (int j = 0; j <= nv; ++j) {
@@ -77,50 +78,139 @@ void HeadModel::buildEyes() {
     eyes_.materialIds.assign(eyes_.triangleCount(), 1);
 }
 
+namespace {
+
+inline float sq(float x) { return x * x; }
+
+// A raised (positive) or recessed (negative) bump on the surface: a Gaussian of the
+// angular distance to a landmark, with independent azimuth/extent in theta and phi.
+inline float bump(float theta, float phi, float th0, float ph0, float thSigma, float phSigma) {
+    const float dt = std::atan2(std::sin(theta - th0), std::cos(theta - th0));
+    return std::exp(-0.5f * (sq(dt / thSigma) + sq((phi - ph0) / phSigma)));
+}
+
+// A crease: the negative of a bump, but narrow across and long along one axis.
+inline float crease(float theta, float phi, float th0, float ph0, float thSigma, float phSigma) {
+    return -bump(theta, phi, th0, ph0, thSigma, phSigma);
+}
+
+}  // namespace
+
+// The female head of the editor: an anatomical parametric surface rather than a displaced
+// sphere. theta = azimuth (0 = face/+Z, +pi/2 = right ear, pi = nape) and phi = polar
+// distance from the crown, so the same parameterization drives the scalp patch, the hair
+// mesh root layer and the hairline (Section 3.1). Every feature below is placed at a real
+// landmark of a ~22 cm female head (glabella, nasion, subnasale, stomion, menton, ...),
+// and the whole surface stays inside the silhouette the hair meshes were authored against.
 Vec3 HeadModel::surfacePoint(float theta, float phi) const {
-    // theta = 0 is the face (+Z), theta = +pi/2 is the right ear, theta = pi the nape.
-    const float sph = std::sin(phi), cph = std::cos(phi);
-    const float sx = sph * std::sin(theta);
-    const float sz = sph * std::cos(theta);
-    const float front = clampf(std::cos(theta), 0.0f, 1.0f);
+    const float sp = std::sin(phi), cp = std::cos(phi);
+    const float dx = sp * std::sin(theta);   // +x = her right
+    const float dy = cp;                     // +y = up
+    const float dz = sp * std::cos(theta);   // +z = face
+    const float front = saturate(std::cos(theta));       // 1 on the face, 0 at the ears
+    const float fw = smoothstepf(0.02f, 0.72f, front);   // soft face mask
 
-    float x = 0.080f * sx;
-    float y = 0.106f * cph;
-    float z = 0.092f * sz;
+    // ---------------------------------------------------------------- cranium -----
+    // 14.8 cm wide, 20.6 cm tall, 19.0 cm deep, with the frontal bone flatter than a
+    // sphere, a fuller occiput and the temples pinched in above the cheekbones.
+    float rx = 0.0805f, ry = 0.1040f, rz = 0.0960f;
+    rx *= 1.0f - 0.050f * bump(theta, phi, 1.15f, 0.95f, 0.40f, 0.30f);   // temple pinch
+    rx *= 1.0f - 0.050f * bump(theta, phi, -1.15f, 0.95f, 0.40f, 0.30f);
+    Vec3 p(rx * dx, ry * dy, rz * dz);
+    if (p.z < 0.0f) p.z *= 1.035f;                   // occiput
+    if (p.y > 0.0f) p.y *= 1.012f;                   // crown
+    // Parietal width: the widest part of the skull is just above the ears.
+    p.x *= 1.0f + 0.030f * bump(std::fabs(theta), phi, 1.45f, 0.80f, 0.55f, 0.45f);
 
-    // --- jaw and chin (below the equator) ---
-    if (y < 0.0f) {
-        const float t = clampf(-y / 0.106f, 0.0f, 1.0f);
-        const float taper = 1.0f - 0.34f * t * t;
-        x *= taper;
-        z *= taper * 0.92f;
-        z += 0.016f * t * t * front;   // the face comes forward to the chin
-        y -= 0.010f * t * t;
+    // ---------------------------------------------------------------- jaw and chin -
+    // The mandible runs from the gonial angle (below the ear) forward to the menton. In
+    // polar terms that is everything below phi ~1.75, so the taper is driven by how far
+    // below the cheek line the point is.
+    const float below = saturate((p.y + 0.004f) / -0.098f);     // 0 at the cheek line
+    const float jaw = below * below;                            // 1 at the chin
+    p.x *= 1.0f - 0.31f * jaw;
+    p.z *= 1.0f - 0.07f * jaw;
+    // Gonial angle: a soft corner where the jaw turns up towards the ear.
+    p.x *= 1.0f + 0.028f * bump(std::fabs(theta), phi, 1.32f, 2.02f, 0.45f, 0.20f) * fw;
+    // Chin: comes forward and down, with a shallow mental crease above it.
+    p.z += fw * (0.020f * jaw * jaw - 0.004f * bump(theta, phi, 0.0f, 2.26f, 0.20f, 0.050f));
+    p.y -= 0.008f * jaw * jaw;
+    // Soft underside of the jaw, so the chin is not a razor edge.
+    if (below > 0.55f) p.z *= 1.0f - 0.10f * saturate((below - 0.55f) / 0.45f) * (1.0f - fw);
+
+    // ---------------------------------------------------------------- face plane -----
+    // The mid-face is flatter than the skull: pull the face back slightly around the
+    // cheeks so the nose and lips can read as separate forms.
+    p.z -= fw * 0.006f * bump(theta, phi, 0.85f, 1.92f, 0.55f, 0.28f);
+    p.z -= fw * 0.005f * bump(theta, phi, -0.85f, 1.92f, 0.55f, 0.28f);
+
+    // ---------------------------------------------------------------- cheekbones ----
+    p.z += fw * 0.0065f * bump(std::fabs(theta), phi, 0.68f, 1.74f, 0.34f, 0.15f);
+    p.x += fw * (theta >= 0.0f ? 1.0f : -1.0f) * 0.0045f *
+           bump(std::fabs(theta), phi, 0.72f, 1.72f, 0.30f, 0.13f);
+    // The hollow under the cheekbone (this is what gives the face its planes).
+    p.z -= fw * 0.0040f * bump(std::fabs(theta), phi, 0.62f, 2.02f, 0.30f, 0.15f);
+
+    // ---------------------------------------------------------------- brow ----------
+    // Glabella and supraorbital ridge, with a slight notch between the brows.
+    p.z += fw * 0.0075f * bump(theta, phi, 0.0f, 1.36f, 0.30f, 0.09f);
+    p.z += fw * 0.0035f * bump(theta, phi, 0.0f, 1.44f, 0.05f, 0.05f);   // glabella notch
+    p.z += fw * 0.0030f * bump(std::fabs(theta), phi, 0.42f, 1.35f, 0.26f, 0.070f);
+    // Frontal bossing: the forehead is a smooth convex plane, not a sphere section.
+    p.z += fw * 0.0060f * bump(theta, phi, 0.0f, 1.06f, 0.75f, 0.24f);
+
+    // ---------------------------------------------------------------- eyes ----------
+    // Socket, then the lids: an upper lid that folds over the eyeball and a lower lid
+    // with a soft bag under it. The opening itself is left open for the eyeball mesh.
+    const float socket = bump(std::fabs(theta), phi, 0.40f, 1.55f, 0.175f, 0.070f);
+    p.z -= fw * 0.0105f * socket;
+    const float upperLid = bump(std::fabs(theta), phi, 0.40f, 1.475f, 0.20f, 0.028f);
+    p.z += fw * 0.0032f * upperLid;
+    const float lowerLid = bump(std::fabs(theta), phi, 0.40f, 1.635f, 0.185f, 0.026f);
+    p.z += fw * 0.0026f * lowerLid;
+    p.z += fw * 0.0022f * bump(std::fabs(theta), phi, 0.42f, 1.695f, 0.16f, 0.042f);  // tear trough
+    // Brow-to-eye plane: the orbital rim.
+    p.z += fw * 0.0022f * bump(std::fabs(theta), phi, 0.40f, 1.34f, 0.20f, 0.028f);
+
+    // ---------------------------------------------------------------- nose ----------
+    // Bridge (nasion -> tip), then the tip, the alae and the nostrils. The bridge is
+    // only ~1 cm wide, so it is expressed as a narrow phi-elongated ridge.
+    const float bridge = bump(theta, phi, 0.0f, 1.55f, 0.075f, 0.20f);
+    p.z += fw * 0.0130f * bridge;
+    const float tip = bump(theta, phi, 0.0f, 1.755f, 0.105f, 0.070f);
+    p.z += fw * 0.0125f * tip;
+    p.y -= fw * 0.0030f * tip;                                  // the tip droops a little
+    // Alae (wings of the nose), and the nostrils recessed beside the columella.
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+        const float s = static_cast<float>(sgn);
+        p.z += fw * 0.0050f * bump(theta, phi, 0.145f * s, 1.790f, 0.085f, 0.048f);
+        p.x += fw * s * 0.0035f * bump(theta, phi, 0.130f * s, 1.795f, 0.075f, 0.044f);
+        p.z -= fw * 0.0075f * bump(theta, phi, 0.055f * s, 1.820f, 0.040f, 0.026f);  // nostril
     }
-    // --- nose ridge and tip ---
-    const float noseBand = std::exp(-std::pow(phi - 1.42f, 2) / 0.020f);
-    z += 0.019f * noseBand * std::exp(-std::pow(theta, 2) / 0.020f);
-    z += 0.008f * std::exp(-std::pow(phi - 1.55f, 2) / 0.0016f) * std::exp(-std::pow(theta, 2) / 0.004f);
-    // --- brow ridge ---
-    z += 0.005f * std::exp(-std::pow(phi - 1.06f, 2) / 0.004f) * std::exp(-std::pow(theta, 2) / 0.55f);
-    // --- eye sockets ---
-    const float socket = std::exp(-std::pow(std::fabs(theta) - 0.38f, 2) / 0.012f) *
-                         std::exp(-std::pow(phi - 1.14f, 2) / 0.0030f);
-    z -= 0.0075f * socket;
-    // --- cheek bones ---
-    z += 0.004f * std::exp(-std::pow(std::fabs(theta) - 0.55f, 2) / 0.05f) *
-         std::exp(-std::pow(phi - 1.40f, 2) / 0.02f);
-    // --- lips ---
-    z += 0.0055f * std::exp(-std::pow(phi - 1.72f, 2) / 0.0012f) * std::exp(-std::pow(theta, 2) / 0.020f);
-    // --- ears ---
-    const float ear = std::exp(-std::pow(phi - 1.25f, 2) / 0.035f) *
-                      std::exp(-std::pow(std::fabs(theta) - 1.60f, 2) / 0.012f);
-    x += (theta > 0.0f ? 1.0f : -1.0f) * 0.016f * ear;
-    // --- back of the skull slightly flattened, crown a little taller ---
-    if (z < 0.0f) z *= 0.97f;
-    if (y > 0.05f) y *= 1.03f;
+    // Columella / subnasale, then the philtrum groove.
+    p.z += fw * 0.0040f * bump(theta, phi, 0.0f, 1.830f, 0.035f, 0.028f);
+    p.z -= fw * 0.0022f * bump(theta, phi, 0.0f, 1.915f, 0.030f, 0.042f);
 
-    return Vec3(x, y, z) + center_;
+    // ---------------------------------------------------------------- mouth ---------
+    // Upper lip with a Cupid's bow, the stomion line, and a fuller lower lip.
+    const float upperLip = bump(theta, phi, 0.0f, 2.005f, 0.115f, 0.030f);
+    const float lowerLip = bump(theta, phi, 0.0f, 2.085f, 0.100f, 0.034f);
+    p.z += fw * 0.0075f * upperLip;
+    p.z += fw * 0.0090f * lowerLip;
+    p.z += fw * 0.0022f * bump(theta, phi, 0.055f, 1.985f, 0.030f, 0.021f);   // bow peaks
+    p.z += fw * 0.0022f * bump(theta, phi, -0.055f, 1.985f, 0.030f, 0.021f);
+    p.z -= fw * 0.0038f * bump(theta, phi, 0.0f, 2.045f, 0.130f, 0.010f);     // stomion
+    p.z -= fw * 0.0028f * bump(theta, phi, 0.0f, 2.155f, 0.100f, 0.016f);     // mentolabial
+    // The corners of the mouth tuck back.
+    p.z -= fw * 0.0026f * bump(std::fabs(theta), phi, 0.125f, 2.050f, 0.030f, 0.028f);
+
+    // ---------------------------------------------------------------- neck / nape --
+    // The nape tapers into the neck instead of ending in a sphere.
+    const float nape = saturate(-std::cos(theta)) * smoothstepf(1.95f, 2.45f, phi);
+    p.x *= 1.0f - 0.10f * nape;
+    p.z *= 1.0f - 0.06f * nape;
+
+    return p + center_;
 }
 
 Vec3 HeadModel::surfaceNormal(float theta, float phi) const {
@@ -139,7 +229,7 @@ float HeadModel::hairlinePhi(float theta) const {
     // Theta = 0 is the face: the forehead hairline sits at ~63 deg from the crown, and
     // the nape hairline reaches ~2.0 rad. Interpolate smoothly around the head.
     const float front = clampf(std::cos(theta), -1.0f, 1.0f);
-    return 0.98f + 1.00f * (0.5f - 0.5f * front);
+    return 1.10f + 0.92f * (0.5f - 0.5f * front);
 }
 
 HeadModel::ScalpPatch HeadModel::defaultPatch() const {
@@ -151,40 +241,135 @@ HeadModel::ScalpPatch HeadModel::defaultPatch() const {
     return p;
 }
 
-void HeadModel::buildHead() {
-    const int nu = 96, nv = 64;
-    const float phi0 = 0.03f, phi1 = 2.35f;
+namespace {
+
+// Non-uniform tessellation: rows and columns are packed where the face needs them.
+// The scalp (phi < 0.9) stays coarse - it is covered by hair - while the eyes, nose and
+// mouth get roughly three times the sample density of a uniform grid at the same budget.
+float phiFromV(float v) {
+    static const float vk[6] = {0.00f, 0.16f, 0.30f, 0.46f, 0.62f, 1.00f};
+    static const float pk[6] = {0.03f, 0.55f, 0.95f, 1.42f, 1.95f, 2.75f};
+    for (int i = 0; i + 1 < 6; ++i) {
+        if (v <= vk[i + 1]) {
+            const float t = (v - vk[i]) / (vk[i + 1] - vk[i]);
+            return pk[i] + (pk[i + 1] - pk[i]) * t;
+        }
+    }
+    return pk[5];
+}
+
+float thetaFromU(float u) {
+    static const float uk[6] = {0.00f, 0.16f, 0.28f, 0.72f, 0.84f, 1.00f};
+    static const float tk[6] = {-kPi, -1.32f, -0.66f, 0.66f, 1.32f, kPi};
+    for (int i = 0; i + 1 < 6; ++i) {
+        if (u <= uk[i + 1]) {
+            const float t = (u - uk[i]) / (uk[i + 1] - uk[i]);
+            return tk[i] + (tk[i + 1] - tk[i]) * t;
+        }
+    }
+    return tk[5];
+}
+
+// One ear: a small bowl (concha) inside an elliptical rim (helix) with a lobe, in the
+// sagittal plane, appended to the head mesh with analytic normals.
+void appendEar(Mesh* mesh, float side, Vec3 center) {
+    const int na = 40, nr = 8;
+    const uint32_t base = static_cast<uint32_t>(mesh->positions.size());
+    const float ry = 0.0215f, rz = 0.0125f;   // vertical / horizontal semi-axes
+    for (int j = 0; j <= nr; ++j) {
+        const float r = static_cast<float>(j) / nr;
+        for (int i = 0; i <= na; ++i) {
+            const float a = 2.0f * kPi * static_cast<float>(i) / na;
+            // Outline: narrower at the top, fuller at the lobe.
+            const float lobe = 1.0f + 0.10f * saturate(-std::sin(a));
+            const float y = center.y + ry * r * std::sin(a) * lobe;
+            const float z = center.z + rz * r * std::cos(a);
+            // The rim stands proud of the skull; the concha sinks into it.
+            float x = center.x + side * (0.0020f + 0.0060f * r * r - 0.0025f * (1.0f - r));
+            // Helix ridge.
+            x += side * 0.0018f * std::exp(-0.5f * sq((r - 0.86f) / 0.10f));
+            // The lobe is a soft blob of its own.
+            x += side * 0.0012f * saturate(-std::sin(a)) * sq(r);
+            mesh->positions.push_back(Vec3(x, y, z));
+            mesh->uvs.push_back(Vec2(static_cast<float>(i) / na, r));
+            Vec3 n(side * 0.55f, 0.0f, 0.0f);
+            if (r > 0.02f) n = normalize(Vec3(side * 0.55f, (y - center.y) / ry,
+                                              (z - center.z) / rz));
+            mesh->normals.push_back(n);
+        }
+    }
+    for (int j = 0; j < nr; ++j) {
+        for (int i = 0; i < na; ++i) {
+            const uint32_t a0 = base + static_cast<uint32_t>(j * (na + 1) + i);
+            const uint32_t a1 = a0 + 1;
+            const uint32_t b0 = a0 + static_cast<uint32_t>(na + 1);
+            const uint32_t b1 = b0 + 1;
+            if (side > 0.0f) {
+                mesh->indices.insert(mesh->indices.end(), {a0, b0, a1, a1, b0, b1});
+            } else {
+                mesh->indices.insert(mesh->indices.end(), {a0, a1, b0, a1, b1, b0});
+            }
+        }
+    }
+}
+
+// Shared builder for the detailed head and the cheap crowd head.
+void buildHeadSurface(Mesh* mesh, int nu, int nv, const HeadModel& head, Vec3 center,
+                      bool withEars) {
+    mesh->positions.clear();
+    mesh->normals.clear();
+    mesh->uvs.clear();
+    mesh->indices.clear();
     for (int j = 0; j <= nv; ++j) {
-        const float v = static_cast<float>(j) / nv;
-        const float phi = phi0 + (phi1 - phi0) * v;
+        const float phi = phiFromV(static_cast<float>(j) / nv);
         for (int i = 0; i <= nu; ++i) {
-            const float u = static_cast<float>(i) / nu;
-            const float theta = -kPi + 2.0f * kPi * u;
-            head_.positions.push_back(surfacePoint(theta, phi));
-            head_.normals.push_back(surfaceNormal(theta, phi));
-            head_.uvs.push_back(Vec2(u, v));
+            const float theta = thetaFromU(static_cast<float>(i) / nu);
+            mesh->positions.push_back(head.surfacePoint(theta, phi));
+            mesh->normals.push_back(head.surfaceNormal(theta, phi));
+            mesh->uvs.push_back(Vec2(static_cast<float>(i) / nu, static_cast<float>(j) / nv));
         }
     }
     for (int j = 0; j < nv; ++j) {
         for (int i = 0; i < nu; ++i) {
             const uint32_t a = static_cast<uint32_t>(j * (nu + 1) + i);
             const uint32_t b = a + 1;
-            const uint32_t c = a + (nu + 1);
+            const uint32_t c = a + static_cast<uint32_t>(nu + 1);
             const uint32_t d = c + 1;
-            head_.indices.insert(head_.indices.end(), {a, c, b, b, c, d});
+            mesh->indices.insert(mesh->indices.end(), {a, c, b, b, c, d});
         }
     }
-    head_.name = "female_head";
-    head_.materialIds.assign(head_.triangleCount(), 0);
+    if (withEars) {
+        const Vec3 earCenter = head.surfacePoint(1.57f, 1.56f);
+        appendEar(mesh, +1.0f, Vec3(earCenter.x - 0.002f, earCenter.y + 0.002f, earCenter.z - 0.004f));
+        const Vec3 earCenterL = head.surfacePoint(-1.57f, 1.56f);
+        appendEar(mesh, -1.0f,
+                  Vec3(earCenterL.x + 0.002f, earCenterL.y + 0.004f, earCenterL.z - 0.004f));
+    }
+    (void)center;
+    mesh->name = "female_head";
+    mesh->materialIds.assign(mesh->triangleCount(), 0);
+}
+
+}  // namespace
+
+void HeadModel::buildHead() {
+    // The hero head: dense enough for the nose wings, the lids and the lips to read.
+    buildHeadSurface(&head_, 224, 132, *this, center_, true);
+}
+
+void HeadModel::buildHeadLow() {
+    // The crowd head: one is drawn per character (Figure 1), where the face is a few
+    // pixels tall, so the same surface is sampled coarsely and the ears are dropped.
+    buildHeadSurface(&headLow_, 80, 56, *this, center_, false);
 }
 
 void HeadModel::buildBody() {
     // Neck + shoulders: a lathe from the jaw down to the shoulder line.
     const int nu = 64;
     struct Profile { float y, r; };
-    const Profile profile[] = {{0.06f, 0.052f}, {-0.02f, 0.045f}, {-0.09f, 0.048f},
+    const Profile profile[] = {{0.04f, 0.052f}, {-0.03f, 0.045f}, {-0.09f, 0.048f},
                                {-0.14f, 0.058f}, {-0.19f, 0.085f}, {-0.23f, 0.135f},
-                               {-0.27f, 0.175f}, {-0.31f, 0.19f}};
+                               {-0.31f, 0.175f}, {-0.31f, 0.19f}};
     const int pn = static_cast<int>(sizeof(profile) / sizeof(profile[0]));
     body_.positions.clear();
     body_.normals.clear();
@@ -213,6 +398,81 @@ void HeadModel::buildBody() {
     body_.name = "body";
     body_.computeNormals();
     body_.materialIds.assign(body_.triangleCount(), 0);
+}
+
+
+// =============================================================================
+//  Face masks
+// =============================================================================
+namespace {
+
+// Inverse of the head parameterization: a point on (or just inside) the surface maps back
+// to the azimuth and polar angle the anatomy is written in.
+inline void toAngles(const Vec3& local, float* theta, float* phi) {
+    *theta = std::atan2(local.x, local.z);
+    const float c = clampf(local.y / 0.1040f, -1.0f, 1.0f);
+    *phi = std::acos(c);
+}
+
+// A smooth band around a value with soft shoulders.
+inline float band(float x, float centre, float half, float feather) {
+    const float d = std::fabs(x - centre);
+    return 1.0f - smoothstepf(half, half + feather, d);
+}
+
+}  // namespace
+
+FaceMasks headFaceMasks(const Vec3& localPos) {
+    FaceMasks m;
+    float theta = 0.0f, phi = 0.0f;
+    toAngles(localPos, &theta, &phi);
+    const float at = std::fabs(theta);
+    const float front = saturate(std::cos(theta));
+    const float fw = smoothstepf(0.05f, 0.62f, front);
+
+    // Eyebrow: a feathered band above the eye, thicker at the inner end, arched outward.
+    {
+        const float arch = 1.468f - 0.026f * smoothstepf(0.18f, 0.62f, at);
+        const float thin = 1.0f - 0.45f * smoothstepf(0.42f, 0.62f, at);
+        const float bandMask = band(phi, arch, 0.019f * thin, 0.024f * thin) *
+                               band(at, 0.40f, 0.165f, 0.10f);
+        // Fade the inner and outer tips so the brow does not end abruptly.
+        m.brow = bandMask * fw * (0.55f + 0.45f * smoothstepf(0.12f, 0.30f, at));
+    }
+    // Lips: upper and lower vermilion either side of the stomion line.
+    {
+        const float halfWidth = 0.165f - 0.035f * smoothstepf(1.99f, 2.12f, phi);
+        const float w = band(at, 0.0f, halfWidth, 0.045f);
+        m.lipUpper = w * band(phi, 1.998f, 0.036f, 0.016f);
+        m.lipLower = w * band(phi, 2.092f, 0.044f, 0.018f);
+        m.mouthLine = band(at, 0.0f, 0.115f, 0.060f) * band(phi, 2.045f, 0.008f, 0.012f);
+    }
+    // Lash lines: the upper lid edge is the darkest part of the eye region.
+    m.lashUpper = 0.0f;   // the lash line belongs to the eye shader, not the skin
+    m.lashLower = 0.0f;
+    // Nostrils.
+    m.nostril = band(at, 0.058f, 0.030f, 0.020f) * band(phi, 1.822f, 0.016f, 0.012f) * fw;
+    // The nose: a narrow ridge down the dorsum, and the side walls beside it that fall
+    // into shadow. Without these the nose reads as a flat triangle on the face.
+    m.noseBridge = fw * band(at, 0.0f, 0.032f, 0.026f) * band(phi, 1.705f, 0.105f, 0.050f);
+    m.noseSide = fw * (bump(at, phi, 0.050f, 1.735f, 0.026f, 0.080f) +
+                       0.6f * bump(at, phi, 0.062f, 1.812f, 0.024f, 0.030f));
+    m.noseSide = saturate(m.noseSide);
+    // Blush: cheeks, the tip of the nose and the ears (where the skin is thin).
+    m.blush = fw * (0.9f * bump(at, phi, 0.62f, 1.90f, 0.26f, 0.16f) +
+                    0.5f * bump(theta, phi, 0.0f, 1.775f, 0.12f, 0.05f));
+    m.blush += 0.7f * bump(at, phi, 1.53f, 1.56f, 0.20f, 0.22f);   // ears
+    m.blush = saturate(m.blush);
+    // Ambient occlusion in the creases.
+    m.ao = fw * (0.85f * bump(at, phi, 0.40f, 1.55f, 0.22f, 0.10f) +     // socket
+                 0.45f * bump(at, phi, 0.30f, 1.93f, 0.10f, 0.13f) +     // nasolabial fold
+                 0.55f * bump(at, phi, 0.0f, 2.045f, 0.14f, 0.012f) +    // lip seam
+                 0.40f * bump(at, phi, 0.0f, 2.27f, 0.22f, 0.09f) +    // under the lower lip
+                 0.30f * bump(at, phi, 0.56f, 1.74f, 0.15f, 0.07f) +    // hollow under the cheekbone
+                 0.25f * bump(at, phi, 0.10f, 1.30f, 0.10f, 0.05f));    // temple
+    m.ao += 0.5f * smoothstepf(2.30f, 2.70f, phi);                        // under the jaw
+    m.ao = saturate(m.ao);
+    return m;
 }
 
 // =============================================================================
@@ -286,6 +546,7 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 const float v = static_cast<float>(j) / (nv - 1);
                 const float front = clampf(std::cos(theta[idx]), 0.0f, 1.0f);  // 1 = face
                 const float back = 1.0f - front;
+                const float at = std::fabs(theta[idx]);
 
                 // Direction in which hair flows over the scalp: the surface tangent
                 // pointing away from the crown, which becomes straight down off the head.
@@ -298,19 +559,42 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 down = normalize(Vec3(down.x, std::min(down.y, -0.25f), down.z));
                 Vec3 dir = normalize(lerp(n, down, smoothstepf(0.0f, 0.45f, s)));
 
-                // Hair length: long at the back, short and swept back at the face so the
-                // features stay visible (a hair mesh's front rows are always short or
-                // styled away from the face).
-                const float lengthScale = (1.0f + style.backBias * back) * (0.55f + 0.65f * v) *
-                                          (1.0f - 0.86f * std::pow(front, 1.2f));
+                // A side part is what turns a wig into a hairstyle: the direction field
+                // turns sideways away from the parting line, so the hair falls as two
+                // curtains framing the face instead of as one cap. The rows on the part
+                // itself are shortened, which opens a visible line of scalp.
+                Vec3 across = head.surfacePoint(theta[idx] + e, phiHere) -
+                              head.surfacePoint(theta[idx] - e, phiHere);
+                if (length2(across) < 1e-12f) across = Vec3(1, 0, 0);
+                across = normalize(across);
+                const float partAt = 0.58f;
+                const float partGap = smoothstepf(0.11f, 0.0f, std::fabs(at - partAt));
+                const float lateral = clampf((at - partAt) * 1.45f, -1.0f, 1.0f);
+                dir = normalize(dir + across * (lateral * (0.30f + 0.55f * s)));
+
+                // At the hairline the hair must not simply fall forwards: that is what
+                // makes a procedural hairdo look like a mop with a fringe over the brows.
+                // It is combed sideways off the part and lifted slightly, so the fringe
+                // frames the temples and the forehead stays readable.
+                const float faceFlow = saturate((front - 0.22f) * 2.1f);
+                if (faceFlow > 0.001f) {
+                    const float sgn = (at >= partAt) ? 1.0f : -1.0f;
+                    Vec3 sweepDir = normalize(across * sgn + Vec3(0.0f, 0.42f, -0.12f));
+                    dir = normalize(lerp(dir, sweepDir, faceFlow * (0.45f + 0.45f * s)));
+                }
+
+                // Hair length: long at the back, short at the face so the features stay
+                // visible (a hair mesh's front rows are always short or styled away).
+                const float lengthScale = (1.0f + style.backBias * back) * (0.62f + 0.58f * v) *
+                                          (1.0f - 0.74f * std::pow(front, 1.15f)) *
+                                          (1.0f - 0.62f * partGap);
                 const float grow = std::max(0.003f, style.length * lengthScale * s * 0.85f);
                 // Volume: the hair volume is widest around mid-length.
                 const float puff = style.volume * std::sin(kPi * s) * 1.2f;
-                // Front rows are swept back over the crown instead of hanging over the
-                // face, which is how a modelled hair mesh keeps the face readable.
-                const float sweep = saturate((front - 0.35f) * 1.6f) * s;
-                dir = normalize(dir + Vec3(0.0f, -0.12f, -0.95f) * sweep);
-                Vec3 p = root + dir * grow + n * puff;
+                // Hair that leaves near the part lies flat against the scalp first, then
+                // peels away from it, which is how the layers of a real hairstyle stack.
+                const float rise = smoothstepf(0.0f, 0.14f, s) * (1.0f - 0.50f * partGap);
+                Vec3 p = root + dir * (grow * rise) + n * (puff * rise);
                 mesh.layerVertexMutable(static_cast<uint32_t>(l), vid) = p;
             }
         }

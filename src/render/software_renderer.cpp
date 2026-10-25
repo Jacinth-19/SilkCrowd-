@@ -79,6 +79,203 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     return color;
 }
 
+// Cheap value noise, used for skin mottling and hair-colour breakup. Deterministic, so a
+// render is reproducible.
+inline float hash13(Vec3 p) {
+    float v = std::sin(p.x * 127.1f + p.y * 311.7f + p.z * 74.7f) * 43758.5453f;
+    return v - std::floor(v);
+}
+inline float valueNoise(Vec3 p) {
+    const Vec3 i(std::floor(p.x), std::floor(p.y), std::floor(p.z));
+    const Vec3 f(p.x - i.x, p.y - i.y, p.z - i.z);
+    const Vec3 u(f.x * f.x * (3.0f - 2.0f * f.x), f.y * f.y * (3.0f - 2.0f * f.y),
+                 f.z * f.z * (3.0f - 2.0f * f.z));
+    float acc = 0.0f;
+    for (int dz = 0; dz < 2; ++dz)
+        for (int dy = 0; dy < 2; ++dy)
+            for (int dx = 0; dx < 2; ++dx) {
+                const Vec3 c = i + Vec3(static_cast<float>(dx), static_cast<float>(dy),
+                                        static_cast<float>(dz));
+                const float w = (dx ? u.x : 1.0f - u.x) * (dy ? u.y : 1.0f - u.y) *
+                                (dz ? u.z : 1.0f - u.z);
+                acc += w * hash13(c);
+            }
+    return acc;
+}
+
+// Skin: subsurface-ish diffuse (a wrap term plus the red scattering at the terminator),
+// a two-lobe specular (the oily sheen of the T-zone and a broad, soft lobe), and the
+// analytic face masks for brows, lips, lashes, nostrils and creases.
+inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
+                      const Vec3& baseAlbedo, float roughPower, float specGain,
+                      const FaceMasks* masks) {
+    // |masks| is null for the neck and shoulders: the same skin model, no face features.
+    const FaceMasks none;
+    const FaceMasks& fm = masks ? *masks : none;
+    const Vec3 L = scene.sunDirection;
+    const Vec3 V = normalize(viewDir);
+
+    // Base complexion with a little mottling so the skin is not a flat plastic colour.
+    const float mott = valueNoise(localPos * 900.0f) * 0.6f + valueNoise(localPos * 240.0f) * 0.4f;
+    Vec3 alb = baseAlbedo * (0.96f + 0.07f * mott);
+    alb = lerp(alb, Vec3(0.76f, 0.42f, 0.36f), fm.blush * 0.42f);
+    alb = lerp(alb, Vec3(0.64f, 0.29f, 0.28f), saturate(fm.lipUpper * 1.1f));
+    alb = lerp(alb, Vec3(0.60f, 0.24f, 0.25f), saturate(fm.lipLower * 1.1f));
+    // Eyebrow hairs are separate strands, not a painted band: a high-frequency streak
+    // pattern along the brow gives the feathered, directional look of real brow hair.
+        // Two frequencies keep the streaks from looking like a printed comb; the strands run
+    // up and outwards, so the pattern is stretched along y and tight along x.
+    const float browHair = 0.52f + 0.48f *
+        (0.5f + 0.5f * std::sin(localPos.x * 17000.0f + localPos.y * 7600.0f +
+                                6.0f * valueNoise(localPos * 2600.0f))) *
+        (0.70f + 0.30f * valueNoise(localPos * 700.0f + Vec3(11.0f, 3.0f, 7.0f)));
+    alb = lerp(alb, Vec3(0.22f, 0.13f, 0.09f), fm.brow * 0.86f * browHair);
+    // The nose: the dorsum is lighter where it faces the key, the side walls darker.
+    alb = lerp(alb, alb * 1.10f, fm.noseBridge * 0.55f);
+    alb = lerp(alb, alb * Vec3(0.78f, 0.74f, 0.74f), fm.noseSide * 0.85f);
+    alb = lerp(alb, Vec3(0.07f, 0.04f, 0.035f), fm.nostril * 0.9f);
+    alb = lerp(alb, Vec3(0.26f, 0.11f, 0.12f), fm.mouthLine * 0.95f);
+
+    // ---- studio rig: a warm key (the scene sun), a cool fill from the opposite side and
+    // a rim from behind, which is what separates the head from the background.
+    const Vec3 keyDir = normalize(L + Vec3(0.0f, 0.15f, 0.0f));
+    const Vec3 fillDir = normalize(Vec3(-keyDir.x * 0.9f, 0.25f, -keyDir.z * 0.35f + 0.55f));
+    const Vec3 rimDir = normalize(Vec3(-keyDir.x * 0.6f, 0.45f, -keyDir.z));
+
+    // Diffuse: wrap the light around the form (skin scatters) and push red where the
+    // surface turns away from the sun, which is the single biggest cue for skin.
+    const float ndl = dot(nrm, keyDir);
+    const float wrapDiff = saturate((ndl + 0.42f) / 1.42f);
+    const float terminator = std::exp(-ndl * ndl * 6.0f);
+    Vec3 diffuse = alb * wrapDiff + Vec3(0.34f, 0.09f, 0.06f) * terminator * 0.26f;
+    diffuse *= scene.sunIntensity * 0.55f;
+
+    // Cool bounce on the shadow side keeps the form readable instead of crushing to black.
+    const float fillNdl = saturate(dot(nrm, fillDir));
+    diffuse += alb * scene.skyHorizon * (fillNdl * 0.30f + 0.06f);
+
+    // Specular: the oily T-zone lobe plus a broad sheen; the lips are glossier still.
+    const Vec3 H = normalize(keyDir + V);
+    const float nh = saturate(dot(nrm, H));
+    const float f0 = 0.028f;
+    const float fres = f0 + (1.0f - f0) * std::pow(1.0f - saturate(dot(nrm, V)), 5.0f);
+    const float gloss = 1.0f + 2.5f * saturate(fm.lipUpper + fm.lipLower);
+    const float spec = (std::pow(nh, roughPower) * 0.55f + std::pow(nh, 10.0f) * 0.05f) *
+                       specGain * gloss;
+
+    const float ao = 1.0f - 0.72f * fm.ao;
+    Vec3 color = diffuse * scene.sunColor * ao + Vec3(spec * fres) * scene.sunColor * ao;
+
+    // Ambient sky term and the rim.
+    const Vec3 amb = lerp(scene.skyHorizon * 0.40f, scene.skyZenith * 0.88f,
+                          saturate(nrm.y * 0.5f + 0.5f));
+    color += alb * amb * (0.80f * ao);
+    const float rim = std::pow(1.0f - saturate(dot(nrm, V)), 3.5f) *
+                      saturate(dot(nrm, rimDir));
+    color += scene.skyZenith * (rim * 0.65f);
+    return color;
+}
+
+// The eyeball. Everything is measured in the eye's own frame: the globe is an 11.8 mm
+// sphere, the iris is 12 mm across and the opening is the almond of a real palpebral
+// fissure (30 x 10 mm). Rendering the opening analytically - rather than hoping the socket
+// geometry clips the sphere - is what keeps the eye from reading as a googly ball: the
+// sclera outside the almond is shaded as lid skin, with the lash line and the lid crease
+// drawn along the boundary.
+inline Vec3 shadeEye(Vec3 nrm, Vec3 viewDir, const Scene& scene, Vec3 localPos) {
+    const Vec3 V = normalize(viewDir);
+    const float side = localPos.x >= 0.0f ? 1.0f : -1.0f;
+    // Eyes sit at theta = +-0.40 and converge slightly on the viewer.
+    const Vec3 outward = normalize(Vec3(side * 0.39f, 0.0f, 0.92f));
+    const Vec3 gaze = normalize(outward * 0.45f + V * 0.55f);
+    const Vec3 right = normalize(cross(Vec3(0.0f, 1.0f, 0.0f), gaze));
+    const Vec3 up = cross(gaze, right);
+
+    const float f = dot(nrm, gaze);   // 1 on the optical axis
+    const float h = dot(nrm, right);
+    const float v = dot(nrm, up);
+
+    // Palpebral fissure: an almond in (h, v), slightly tilted up at the outer corner.
+    const float tilt = 0.10f * h * side;
+    const float ax = std::fabs(h) / 0.575f;
+    const float ay = std::fabs(v - tilt) / 0.255f;
+    const float r = std::pow(ax, 1.7f) + ay * ay;
+    const float outside = smoothstepf(1.0f, 1.22f, r);   // 1 = lid, 0 = open eye
+
+    // Sclera, faintly veined and cooler towards the corners.
+    Vec3 sclera = Vec3(0.85f, 0.81f, 0.775f);
+    sclera = lerp(sclera, Vec3(0.72f, 0.66f, 0.64f), saturate(std::fabs(h) * 1.4f - 0.35f));
+    // Iris (6 mm radius -> cos(asin(6/11.8)) = 0.87), limbal ring, pupil.
+    const float iris = smoothstepf(0.835f, 0.872f, f);
+    Vec3 irisColor = Vec3(0.36f, 0.22f, 0.11f);
+    irisColor *= 0.75f + 0.55f * saturate(-v * 1.5f + 0.35f);   // light through the stroma
+    // Radial fibres: a little variation around the iris.
+    const float ang = std::atan2(v, h);
+    const float fibre = 0.85f + 0.15f * std::sin(ang * 26.0f);
+    irisColor *= fibre;
+    irisColor = lerp(irisColor, Vec3(0.15f, 0.09f, 0.05f), smoothstepf(0.90f, 0.95f, f));
+    Vec3 c = lerp(sclera, irisColor, iris);
+    c = lerp(c, Vec3(0.02f, 0.02f, 0.02f), smoothstepf(0.968f, 0.982f, f));
+    const float limbal = std::exp(-std::pow((f - 0.872f) / 0.016f, 2.0f));
+    c = lerp(c, Vec3(0.04f, 0.03f, 0.03f), limbal * 0.75f);
+
+    // Lid skin outside the opening, with a lash line right on the boundary.
+    const Vec3 lid = Vec3(0.66f, 0.45f, 0.39f);
+    c = lerp(c, lid, outside);
+    const float lash = std::exp(-std::pow((r - 1.03f) / 0.055f, 2.0f));
+    const float lashUp = smoothstepf(-0.28f, 0.05f, v - tilt);   // thicker on the upper lid
+    c = lerp(c, Vec3(0.045f, 0.035f, 0.030f), lash * (0.12f + 0.55f * lashUp));
+    // Crease above the lid and the shadow the lid casts on the eyeball.
+    const float crease = std::exp(-std::pow((v - tilt - 0.42f) / 0.10f, 2.0f));
+    c = lerp(c, lid * 0.72f, saturate(crease) * 0.55f * smoothstepf(0.9f, 1.15f, r));
+    c *= 1.0f - 0.34f * saturate(smoothstepf(-0.05f, 0.55f, v)) * (1.0f - outside);
+
+    // Eyelashes. A lash line alone reads as eyeliner; real lashes are individual tapered
+    // strands that leave the lid and curve up over the eyeball, and their silhouette on
+    // the sclera is most of what makes an eye look alive at portrait distance.
+    {
+        const float vTop = tilt + 0.255f * std::sqrt(std::max(0.0f, 1.0f - std::pow(ax, 1.7f)));
+        const float arc = saturate((h + 0.60f) / 1.20f);
+        // Two beats: long lashes over the middle of the lid, shorter ones at the corners.
+        // Individual lashes are not all the same length: the slow beat gives the fan its
+        // shape and the fast one keeps neighbouring lashes from lining up.
+        const float lenUp = (0.26f + 0.13f * std::sin(arc * 3.1f)) *
+                            (1.0f - 0.55f * std::pow(std::fabs(h) / 0.62f, 3.0f)) *
+                            (0.78f + 0.42f * (0.5f + 0.5f * std::sin(arc * 233.0f + 1.9f)));
+        const float comb = 0.5f + 0.5f * std::sin(arc * 118.0f + 0.8f);
+        const float above = v - vTop;
+        if (above > 0.0f) {
+            const float t = above / std::max(1e-3f, lenUp);
+            if (t > -0.2f && t < 1.0f) {
+                // Taper along the lash and separate the individual hairs in the comb.
+                const float taper = smoothstepf(1.0f, 0.55f, saturate(t));
+                const float hair = smoothstepf(0.42f, 0.86f, comb);
+                c = lerp(c, Vec3(0.05f, 0.038f, 0.032f), taper * hair * 0.80f);
+            }
+        }
+        // Lower lashes: sparse, half the length, angled down.
+        const float lenLo = 0.13f * (1.0f - 0.5f * std::pow(std::fabs(h) / 0.62f, 2.0f));
+        const float combLo = 0.5f + 0.5f * std::sin(arc * 74.0f + 2.1f);
+        const float vBot = tilt - 0.255f * std::sqrt(std::max(0.0f, 1.0f - std::pow(ax, 1.7f)));
+        const float below = vBot - v;
+        if (below > -0.04f) {
+            const float t = below / std::max(1e-3f, lenLo);
+            if (t > -0.2f && t < 1.0f) {
+                const float taper = smoothstepf(1.0f, 0.5f, saturate(t));
+                c = lerp(c, Vec3(0.09f, 0.07f, 0.06f),
+                         taper * smoothstepf(0.55f, 0.95f, combLo) * 0.62f);
+            }
+        }
+    }
+
+    // Catchlight: two lights, because a single dot looks dead.
+    const Vec3 H = normalize(scene.sunDirection + V);
+    c += scene.sunColor * (std::pow(saturate(dot(nrm, H)), 400.0f) * 2.6f);
+    c += scene.skyZenith * (std::pow(saturate(dot(nrm, normalize(V + Vec3(-0.3f, 0.5f, 0.4f)))),
+                                     260.0f) * 0.8f);
+    return c * (0.72f + 0.28f * saturate(dot(nrm, scene.sunDirection)));
+}
+
 struct Projected {
     float x = 0, y = 0, z = 0;
     bool visible = false;
@@ -215,7 +412,10 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
 
     // ---------------- opaque geometry ----------------
     auto drawMesh = [&](const Mesh& mesh, Vec3 baseAlbedo, float specPower, float specGain,
-                        bool isSkin, bool isEye = false, const Mat4* xform = nullptr) {
+                        bool isSkin, bool isEye = false, const Mat4* xform = nullptr,
+                        bool faceMasks = false) {
+        const Mat4 invXform = xform ? xform->inverseAffine() : Mat4::identity();
+        const Vec3 headCenter(0.0f, 0.02f, 0.0f);   // HeadModel::center()
         for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
             Vec3 p[3], n[3];
             Projected pr[3];
@@ -256,37 +456,22 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     Vec3 alb = baseAlbedo;
                     const float ndl = saturate(dot(nrm, scene.sunDirection));
                     float wrap = ndl;
+                    if (isSkin) {
+                        // The face masks are authored in the head's own space, so undo the
+                        // instance transform before evaluating them. The neck/shoulders are
+                        // shaded with the same skin model but without the face masks.
+                        const Vec3 local = invXform.transformPoint(pos) - headCenter;
+                        const FaceMasks fm = faceMasks ? headFaceMasks(local) : FaceMasks{};
+                        s.color = shadeSkin(local, nrm, V, scene, baseAlbedo, specPower, specGain,
+                                            faceMasks ? &fm : nullptr);
+                        s.depth = z;
+                        continue;
+                    }
                     if (isEye) {
-                        // Sclera -> iris -> pupil, driven by how much the eye normal faces
-                        // the camera (the eyes are spheres pointing down +Z).
-                        const float f = saturate(dot(nrm, normalize(Vec3(0.0f, 0.0f, 1.0f))));
-                        alb = Vec3(0.92f, 0.90f, 0.88f);
-                        alb = lerp(alb, Vec3(0.22f, 0.15f, 0.09f), smoothstepf(0.55f, 0.80f, f));
-                        alb = lerp(alb, Vec3(0.02f, 0.02f, 0.02f), smoothstepf(0.93f, 0.975f, f));
-                        specGain = 1.4f;
-                    } else if (isSkin) {
-                        alb = Vec3(0.66f, 0.47f, 0.39f);
-                        wrap = saturate((dot(nrm, scene.sunDirection) + 0.40f) / 1.40f);
-                        // Eyebrows: a soft band just above each eye socket.
-                        {
-                            const float bx = (std::fabs(pos.x) - 0.0272f) / 0.0185f;
-                            const float by = (pos.y - 0.0835f) / 0.0052f;
-                            const float b2 = bx * bx + by * by;
-                            if (nrm.z > 0.25f && b2 < 1.0f) {
-                                const float t = smoothstepf(0.15f, 1.0f, b2);
-                                alb = lerp(alb, Vec3(0.20f, 0.13f, 0.09f), (1.0f - t) * 0.85f);
-                            }
-                        }
-                        // Lips: a soft ellipse rather than a rectangle, with a darker
-                        // crease between the upper and lower lip.
-                        const float mx = pos.x / 0.0245f;
-                        const float my = (pos.y + 0.0305f) / 0.0105f;
-                        const float r2 = mx * mx + my * my;
-                        if (nrm.z > 0.30f && r2 < 1.0f) {
-                            const float t = (1.0f - smoothstepf(0.25f, 1.0f, r2));
-                            alb = lerp(alb, Vec3(0.52f, 0.25f, 0.24f), t * 0.85f);
-                            if (r2 < 0.10f) alb = lerp(alb, Vec3(0.34f, 0.15f, 0.15f), 0.75f);
-                        }
+                        const Vec3 local = invXform.transformPoint(pos) - headCenter;
+                        s.color = shadeEye(nrm, V, scene, local);
+                        s.depth = z;
+                        continue;
                     }
                     Vec3 color = alb * scene.sunColor * (wrap * scene.sunIntensity * 0.55f);
                     (void)0;
@@ -308,16 +493,17 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
         // mesh as-is.
         if (scene.hair.size() > 1 && !scene.head.positions.empty()) {
             for (const auto& inst : scene.hair) {
-                drawMesh(scene.head, Vec3(0.66f, 0.47f, 0.39f), 26.0f, 0.08f, true, false,
-                         &inst->transform);
-                drawMesh(scene.body, Vec3(0.56f, 0.41f, 0.34f), 26.0f, 0.08f, true, false,
+                drawMesh(scene.head, Vec3(0.72f, 0.51f, 0.43f), 60.0f, 0.55f, true, false,
+                         &inst->transform, true);
+                drawMesh(scene.body, Vec3(0.70f, 0.49f, 0.42f), 40.0f, 0.35f, true, false,
                          &inst->transform);
                 drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, true,
                          &inst->transform);
             }
         } else {
-            drawMesh(scene.head, Vec3(0.66f, 0.47f, 0.39f), 26.0f, 0.08f, true);
-            drawMesh(scene.body, Vec3(0.56f, 0.41f, 0.34f), 26.0f, 0.08f, true);
+            drawMesh(scene.head, Vec3(0.72f, 0.51f, 0.43f), 60.0f, 0.55f, true, false, nullptr,
+                     true);
+            drawMesh(scene.body, Vec3(0.70f, 0.49f, 0.42f), 40.0f, 0.35f, true);
             drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, /*isEye=*/true);
         }
     }
@@ -443,6 +629,18 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                 const int n = static_cast<int>(g.vertices.size());
                 if (n < 2) continue;
 
+                // Per-strand colour: a dye is never one flat value. A few percent of the
+                // strands are also lifted and lightened so the surface breaks up into
+                // individual hairs and flyaways instead of reading as a solid shell.
+                const float jit = hash13(Vec3(static_cast<float>(s) * 0.731f + f * 0.113f,
+                                              static_cast<float>(f) * 0.517f, 3.7f));
+                const float flyaway = jit > 0.965f ? 1.0f : 0.0f;
+                StylingParams spj = inst.styling;
+                const float value = 0.80f + 0.42f * jit + 0.35f * flyaway;
+                spj.color = Vec3(inst.styling.color.x * value * (0.96f + 0.09f * jit),
+                                 inst.styling.color.y * value,
+                                 inst.styling.color.z * value * (1.02f - 0.06f * jit));
+
                 // Shading is evaluated once per strand vertex (this is exactly what the
                 // mesh shader does: it shades the 2*ns+2 strip vertices it emits) and
                 // interpolated across the ribbon, instead of per fragment.
@@ -453,7 +651,7 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     const Vec3 V = normalize(camPos - p);
                     const float ao = 0.5f + 0.5f * saturate(g.vertices[k].w * 1.5f);
                     vcolor[static_cast<size_t>(k)] =
-                        shadeHair(t, p, V, scene, inst.styling, g.vertices[k].w, ao);
+                        shadeHair(t, p, V, scene, spj, g.vertices[k].w, ao);
                 }
                 Projected prevA{}, prevB{};
                 Vec3 prevPA, prevPB;

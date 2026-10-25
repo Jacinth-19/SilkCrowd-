@@ -7,9 +7,11 @@ layout(push_constant) uniform HeadPush { mat4 mvp; mat4 model; vec4 params; } pc
 layout(location = 0) out vec3 outNormal;
 layout(location = 1) out vec3 outWorld;
 layout(location = 2) out vec2 outUV;
+layout(location = 3) out vec3 outLocal;   // head-local position for the face masks
 void main() {
     outWorld = (pc.model * vec4(inPosition, 1.0)).xyz;
     outNormal = mat3(pc.model) * inNormal;
     outUV = inUV;
+    outLocal = inPosition;
     gl_Position = pc.mvp * vec4(inPosition, 1.0);
 }

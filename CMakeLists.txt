@@ -67,12 +67,9 @@ if(SILKCROWD_GLSLC OR SILKCROWD_GLSLANG)
   foreach(shader ${SILKCROWD_SHADERS})
     set(src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
     set(spv ${SILKCROWD_SHADER_OUT}/${shader}.spv)
-    # Task/mesh shaders need SPIR-V 1.4 (VK_EXT_mesh_shader); the others are fine at 1.0.
-    if(shader MATCHES "\\.(task|mesh)$")
-      set(extra --target-env=vulkan1.2)
-    else()
-      set(extra --target-env=vulkan1.1)
-    endif()
+    # Everything targets Vulkan 1.2: `#version 460` is rejected by glslc for lower
+    # environments, and the task/mesh shaders need SPIR-V 1.4+ for GL_EXT_mesh_shader.
+    set(extra --target-env=vulkan1.2)
     if(SILKCROWD_GLSLC)
       add_custom_command(OUTPUT ${spv}
         COMMAND ${SILKCROWD_GLSLC} ${extra} -O

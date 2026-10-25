@@ -41,6 +41,8 @@ public:
     float hairlinePhi(float theta) const;
 
     const Mesh& headMesh() const { return head_; }
+    // Coarse copy of the same surface for the crowd, where each face is a few pixels tall.
+    const Mesh& headMeshLow() const { return headLow_; }
     const Mesh& eyesMesh() const { return eyes_; }
     const Mesh& bodyMesh() const { return body_; }
     Vec3 center() const { return center_; }
@@ -59,12 +61,33 @@ public:
 
 private:
     void buildHead();
+    void buildHeadLow();
     void buildBody();
     void buildEyes();
-    Mesh head_, body_, eyes_;
+    Mesh head_, headLow_, body_, eyes_;
     Vec3 center_{0.0f, 0.02f, 0.0f};
     float radius_ = 0.13f;
 };
+
+// Analytic face masks for shading, evaluated from the same anatomy as the geometry: a
+// point on the head is mapped back to (theta, phi) and the landmark Gaussians are reused,
+// so the brows, the lips, the lash line and the creases stay glued to the surface no
+// matter how the head is tessellated.
+struct FaceMasks {
+    float brow = 0.0f;        // eyebrow
+    float lipUpper = 0.0f;    // vermilion of the upper lip
+    float lipLower = 0.0f;
+    float mouthLine = 0.0f;   // the dark seam between the lips
+    float lashUpper = 0.0f;   // lash line along the upper lid
+    float lashLower = 0.0f;
+    float nostril = 0.0f;
+    float noseBridge = 0.0f;  // the dorsum of the nose, between the brows and the tip
+    float noseSide = 0.0f;    // the side walls and the alar creases beside them
+    float blush = 0.0f;       // cheeks, nose tip, ears
+    float ao = 0.0f;          // sockets, nasolabial folds, under the chin, lip seam
+};
+// |localPos| is in the head's own space (world position minus HeadModel::center()).
+FaceMasks headFaceMasks(const Vec3& localPos);
 
 // One of the ten hairstyles of Figure 10.
 struct HairStyleSpec {

@@ -13,6 +13,9 @@ constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
 Scene buildHeadScene(int styleIndex, uint32_t strandCount, uint32_t seed) {
     Scene scene;
     HeadModel head;
+    // Portrait lighting: the key comes from camera left and above, so the face has a lit
+    // and a shadow side instead of the flat frontal wash that shows every modelling flaw.
+    scene.sunDirection = normalize(Vec3(-0.42f, 0.66f, 0.62f));
     scene.head = head.headMesh();
     scene.body = head.bodyMesh();
     scene.eyes = head.eyesMesh();
@@ -47,7 +50,7 @@ Scene buildCrowdScene(int count) {
     HeadModel head;
     // One shared head/body mesh, drawn once per crowd instance (see the renderers), so that
     // every character in Figure 1's crowd has a face under its own hairstyle.
-    scene.head = head.headMesh();
+    scene.head = head.headMeshLow();
     scene.body = head.bodyMesh();
     scene.eyes = head.eyesMesh();
 
@@ -95,8 +98,10 @@ Camera headCamera(int width, int height, float fovYDeg) {
     Camera c;
     c.fovY = deg2rad(fovYDeg);
     c.aspect = static_cast<float>(width) / static_cast<float>(height);
-    c.position = Vec3(0.135f, 0.055f, 0.52f);
-    c.target = Vec3(0.0f, 0.015f, 0.0f);
+    // A three-quarter view: it reads the way the reference renders do, and it shows the
+    // nose, the cheekbone and the jaw as forms rather than as a silhouette.
+    c.position = Vec3(0.255f, 0.072f, 0.445f);
+    c.target = Vec3(0.005f, 0.008f, 0.0f);
     c.nearZ = 0.05f;
     return c;
 }

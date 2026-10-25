@@ -1513,13 +1513,16 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         if (models_.size() > 1) {
             for (const auto& model : models_) {
                 if (!model.instance) continue;
-                drawMeshXf(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), 0.0f,
+                drawMeshXf(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), -1.0f,
+                           model.instance->transform);
+                drawMeshXf(eyesMesh_, eyesMeshIndex_.buffer, Vec3(0.16f, 0.11f, 0.07f), -2.0f,
                            model.instance->transform);
                 drawMeshXf(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f,
                            model.instance->transform);
             }
         } else {
-            drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), 0.0f);
+            drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), -1.0f);
+            drawMesh(eyesMesh_, eyesMeshIndex_.buffer, Vec3(0.16f, 0.11f, 0.07f), -2.0f);
             drawMesh(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f);
         }
         // Figure 9: the teapot under each hair layer.
@@ -1777,6 +1780,7 @@ bool HairGpuRenderer::uploadStaticMeshes() {
         indexOut->indexCount = static_cast<uint32_t>(mesh.indices.size());
     };
     upload(scene_->head, &headMesh_, &headMeshIndex_);
+    upload(scene_->eyes, &eyesMesh_, &eyesMeshIndex_);
     upload(scene_->body, &bodyMesh_, &bodyMeshIndex_);
     upload(scene_->teapot, &teapotMesh_, &teapotMeshIndex_);
     return true;
@@ -2321,6 +2325,8 @@ void HairGpuRenderer::shutdown() {
         {compositeUniform_, compositeUniformMemory_},
         {headMesh_.buffer, headMesh_.memory},
         {headMeshIndex_.buffer, headMeshIndex_.memory},
+        {eyesMesh_.buffer, eyesMesh_.memory},
+        {eyesMeshIndex_.buffer, eyesMeshIndex_.memory},
         {bodyMesh_.buffer, bodyMesh_.memory},
         {bodyMeshIndex_.buffer, bodyMeshIndex_.memory},
         {teapotMesh_.buffer, teapotMesh_.memory},
@@ -2332,9 +2338,11 @@ void HairGpuRenderer::shutdown() {
         strandIndexBuffer_ = strandMetaBuffer_ = workItemBuffer_ = cameraUniform_ =
             lightUniform_ = compositeUniform_ = VK_NULL_HANDLE;
     headMesh_ = StaticMeshGpu{};
+    eyesMesh_ = StaticMeshGpu{};
     bodyMesh_ = StaticMeshGpu{};
     teapotMesh_ = StaticMeshGpu{};
     headMeshIndex_ = StaticMeshGpu{};
+    eyesMeshIndex_ = StaticMeshGpu{};
     bodyMeshIndex_ = StaticMeshGpu{};
     teapotMeshIndex_ = StaticMeshGpu{};
 

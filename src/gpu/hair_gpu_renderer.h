@@ -293,9 +293,11 @@ private:
         uint32_t indexCount = 0;
     };
     StaticMeshGpu headMesh_;
+    StaticMeshGpu eyesMesh_;
     StaticMeshGpu bodyMesh_;
     StaticMeshGpu teapotMesh_;
     StaticMeshGpu headMeshIndex_;
+    StaticMeshGpu eyesMeshIndex_;
     StaticMeshGpu bodyMeshIndex_;
     StaticMeshGpu teapotMeshIndex_;
     uint32_t maxStrands_ = 0;
