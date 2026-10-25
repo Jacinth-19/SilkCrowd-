@@ -1,0 +1,97 @@
+SilkCrowd validation suite - replication of Bhokare et al., SIGGRAPH 2024
+=====================================================================
+== Curve conversion (Section 2.2, Figure 3d-3e) ==
+  [PASS] Catmull-Rom -> cubic Bezier is exact  (max error 0.000000)
+  [PASS] cubic -> 2 quadratic Beziers (Truong 2020)  (max error 0.882816% of a segment length)
+  [PASS] Bezier handles match the Catmull-Rom tangents
+
+== Hair mesh texture (Table 1, Figure 3e) ==
+Figure 3e depth (1 + (L-1)*4): OK
+attribute texture depths (no intermediates): OK
+root slice == scalp vertices: OK
+uv-texture == root uv: OK
+w-texture monotonic: OK
+intermediate slices == Bezier control points: OK  (max error 0)
+texture eval reproduces quadratic Beziers: max error 3.00343e-08
+texture eval vs exact Catmull-Rom: max error 0.000343443
+  [PASS] depth = 1 + (numLayers-1)*4  (depth 13 for 4 layers)
+  [PASS] uv-texture 2D, w/u/v-textures have no intermediate slices
+  [PASS] root slice == scalp vertices (bilinear within a bundle)
+  [PASS] uv-texture == root uv styling coordinates
+  [PASS] w-texture: w = 0 at the root, increasing to the tip
+  [PASS] slice 4L+1/4L+2/4L+3 == q+, q0.5, q- (Figure 3e)
+  [PASS] 2 trilinear + 1 linear reproduces the quadratic Beziers  (max error 0.000000)
+  [PASS] texture evaluation vs. exact Catmull-Rom  (max error 0.000343)
+  [PASS] updateDynamic() rebuilds the dynamic textures after a deformation
+
+== Styling coordinates (Eq. 1-4, Figures 4-5) ==
+  [PASS] u_hat and v_hat are unit vectors (Eq. 1)
+  [PASS] w_hat = (u x v)/||u x v|| is well defined (Eq. 4)
+  skew (|u_hat . v_hat|, preserved by design): 0.972422
+  Eq. 1-4 frames:  shared bundle edges tested: 840, max frame disagreement = 0.000690534 rad, mean disagreement = 0.000230171 rad
+  finite diffs:    shared bundle edges tested: 840, max frame disagreement = 1.07202 rad, mean disagreement = 0.191841 rad
+  [PASS] Eq. 1-4 frames are continuous across bundle edges (Figure 4b)  (max 0.000691 rad)
+  [PASS] finite differences are discontinuous (reproduces the Figure 4a seam)  (max 1.072018 rad)
+
+== Hair root placement (Section 3.3, Yuksel 2015) ==
+  quad set:     mean NN distance 0.0174277 (white noise 0.0110485), NN std-dev 0.00268414, range [0.00888116, 0.0264676], score 0.948783
+  triangle set: mean NN distance 0.0122806 (white noise 0.0110485), NN std-dev 0.00192128, range [0.00478926, 0.0185753], score 0.792282
+  [PASS] sample elimination produces blue noise (not white noise)  (mean NN 0.017428 vs 0.011049)
+  [PASS] progressive sets hold the requested sample count
+  [PASS] triangle root placement reproduces barycentrics (Section 3.3)  (max error 0.000000)
+  mean barycentrics (uniform samples): Barycentric mapping 0.3306/0.3352/0.3343, paper-literal expression 0.4644/0.2013/0.3343 (ideal 0.3333)
+  [PASS] no bias towards the duplicated vertex
+
+== Level of detail (Section 3.6, Eq. 7-12, Figures 6-8) ==
+  bundles F=100, N=200: largest single transition event: Eq. 8 = 6 strands, plain ceil(L*N) = 100 strands
+  [PASS] Eq. 8 random increment desynchronises bundle LOD transitions  (6 vs 100 strands per event)
+  [PASS] each bundle keeps at least one strand for L > 0
+  [PASS] L = 0 culls the bundle
+  [PASS] strand thickness compensation min(1/L, N_i)
+  [PASS] vertex LOD is monotone in L (Eq. 9)
+  [PASS] vertex count is always 2^e + 1
+  [PASS] gamma in [0,1] (Eq. 12)
+  level boundary L=0.25: e 3 -> 4, gamma 0.998, even-vertex mismatch 0.00115 m
+  [PASS] vertex LOD steps by exactly one power of two
+  [PASS] Eq. 11/12 morphing keeps the rendered strand continuous across levels
+  [PASS] Eq. 7 detail level falls with distance  (L(0.3m)=1.000000, L(12m)=0.049455)
+
+== Procedural styling (Section 3.4, Figure 10) ==
+  2000 strands x 33 vertices: 28.21 ms with styling, 14.74 ms without (+91%)
+  [PASS] styling operations are applied after base curve generation  (cost measured above)
+
+== Hair mesh simulation (Section 4: XPBD, Wu and Yuksel 2016, Hsu 2022) ==
+  first-frame drift from the rest shape: sag-free init 0.0005 m, without 0.0089 m
+  [PASS] sag-free initialization removes the initial drop (Hsu et al. 2022)  (0.000474 m vs 0.008894 m)
+  wind 10 m/s: 0.0064 m, 20 m/s: 0.0135 m mean displacement
+  [PASS] wind force model (Wu and Yuksel 2016) deflects the hair proportionally to wind speed
+  [PASS] XPBD solver remains stable (no divergence)
+  mean stretch error at rest: 0.12%
+  [PASS] edge constraints converge (stretch error < 5%)
+
+== Storage (Table 1, Figure 1) ==
+  preset                  verts  layers  depth  fp16 KB   fp32 KB
+  long_straight            192      4     13     91.10    182.20
+  wavy_medium              484      4     13    237.73    475.45
+  curly_short              672      4     13    336.91    673.83
+  afro                     780      4     13    392.98    785.95
+  bob                      520      4     13    260.91    521.81
+  ponytail                 432      5     17    275.00    550.00
+  beach_waves              884      4     13    453.35    906.70
+  curly_long              1280      4     13    660.35   1320.70
+  pixie                    320      3      9    112.89    225.78
+  platinum_bob             720      4     13    364.41    728.81
+  100 crowd models: 1.61 MB total, 14.1-19.1 KB per model (paper: 1.7 MB, 13-21 KB)
+  [PASS] 100 unique hair models fit in 1.7 MB
+  [PASS] per-model footprint in the paper's 13-21 KB range
+
+== Crowd workload (Figure 1) ==
+  strands: 9998570 total (no LOD) -> 2487702 rendered with LOD (24.88%), strand vertices 82094166, triangles 159212928
+  without LOD the same scene generates 329952810 strand vertices and 639908480 triangles (9.8 GB of vertex data if it had to be stored)
+  [PASS] 100 characters x ~100k unique strands  (9998570 strands)
+  [PASS] LOD removes a large part of the strand workload at the crowd distance  (100% -> 24.880578%)
+  [PASS] vertex LOD reduces the generated vertex count  (82094166 vs 329952810 vertices)
+
+=====================================================================
+checks passed: 40, failed: 0
+RESULT: all paper-critical invariants validated

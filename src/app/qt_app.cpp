@@ -75,6 +75,7 @@ struct EditorState {
     bool hair = true;
     bool head = true;
     bool shadows = true;
+    bool taa = true;
     bool wind = false;
     float windStrength = 3.0f;
     float exposure = 1.05f;
@@ -271,6 +272,7 @@ void HairVulkanRenderer::startNextFrame() {
     options.width = window_->width();
     options.height = window_->height();
     options.msaa = st->msaa;
+    options.taa = st->taa;
     options.enableLod = st->lod;
     options.drawHair = st->hair;
     options.drawHead = st->head;
@@ -415,6 +417,11 @@ QWidget* buildInspector(QWidget* parent, EditorState* st, HairVulkanWindow* view
     shadow->setChecked(st->shadows);
     QObject::connect(shadow, &QCheckBox::toggled, panel, [=](bool v) { st->shadows = v; onChanged(); });
     form->addRow(shadow);
+
+    auto* taa = new QCheckBox("Temporal AA (sub-pixel jitter + reprojection)", panel);
+    taa->setChecked(st->taa);
+    QObject::connect(taa, &QCheckBox::toggled, panel, [=](bool v) { st->taa = v; onChanged(); });
+    form->addRow(taa);
 
     auto* msaa = new QComboBox(panel);
     for (int s : {1, 2, 4, 8}) msaa->addItem(QString("%1x MSAA").arg(s), s);

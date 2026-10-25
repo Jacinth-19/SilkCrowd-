@@ -26,3 +26,5 @@ renders/*.png
 .vscode/
 .idea/
 .DS_Store
+build/
+renders/*.png

@@ -180,7 +180,7 @@ void HeadModel::buildHead() {
 
 void HeadModel::buildBody() {
     // Neck + shoulders: a lathe from the jaw down to the shoulder line.
-    const int nu = 64, nv = 40;
+    const int nu = 64;
     struct Profile { float y, r; };
     const Profile profile[] = {{0.06f, 0.052f}, {-0.02f, 0.045f}, {-0.09f, 0.048f},
                                {-0.14f, 0.058f}, {-0.19f, 0.085f}, {-0.23f, 0.135f},
