@@ -1,0 +1,208 @@
+name: CI
+
+# SilkCrowd is validated on every platform the paper's authors could plausibly run it on.
+#   linux      Mesa lavapipe software Vulkan (no GPU needed)
+#   windows    Vulkan SDK from LunarG + the software rasteriser fallback
+#   macos      MoltenVK through the Vulkan loader from Homebrew
+#   ios        MoltenVK on an iOS simulator (build only: simulation is headless)
+#   android    NDK build of the APK, 15 s headless run in an API 33 emulator
+#   update-readme  composites the per-platform screenshots into the README table
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (lavapipe)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libvulkan-dev vulkan-tools mesa-vulkan-drivers \
+            glslang-tools qt6-base-dev libqt6opengl6-dev
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Validation suite
+        run: ./build/SilkCrowd --validate --report docs/validation_report.txt
+      - name: Unit tests
+        run: ./build/silkcrowd_tests
+      - name: Headless render (Vulkan, lavapipe)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
+            --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless || true
+          ./build/SilkCrowd --screenshot artifacts/linux_software.png --scene head \
+            --style 0 --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: artifacts/*.png
+
+  windows:
+    name: Windows (Vulkan SDK)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release -j 2
+      - name: Validation suite
+        run: build/Release/SilkCrowd.exe --validate
+      - name: Headless render (5 s)
+        run: |
+          build/Release/SilkCrowd.exe --screenshot artifacts/windows.png --scene head `
+            --style 4 --strands 40000 --width 960 --height 640 --frames 5 --headless
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: artifacts/*.png
+
+  macos:
+    name: macOS (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: brew install cmake ninja vulkan-headers vulkan-loader molten-vk glslang shaderc
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" \
+            -DVulkan_INCLUDE_DIR="$(brew --prefix vulkan-headers)/include" \
+            -DVulkan_LIBRARY="$(brew --prefix vulkan-loader)/lib/libvulkan.dylib"
+      - name: Build
+        run: cmake --build build -j
+      - name: Validation suite
+        run: ./build/SilkCrowd --validate
+      - name: Headless render (MoltenVK)
+        env:
+          VK_ICD_FILENAMES: $(brew --prefix)/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json
+        run: |
+          ./build/SilkCrowd --screenshot artifacts/macos.png --scene head --style 2 \
+            --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-macos
+          path: artifacts/*.png
+
+  ios-simulator:
+    name: iOS simulator (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoltenVK
+        run: brew install molten-vk vulkan-headers vulkan-loader glslang
+      - name: Build the headless renderer for the simulator
+        run: |
+          # The renderer is platform independent; on iOS it is compiled with MoltenVK as
+          # the Vulkan implementation and exercised headlessly by the validation suite.
+          cmake -B build-ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DSILKCROWD_WITH_QT=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ios --config Release -j 2
+      - name: Validation suite on the simulator
+        run: |
+          xcrun simctl list devices | head -5
+          ./build-ios/Release-iphonesimulator/SilkCrowd --validate | tee artifacts/ios_validation.txt
+
+  android-emulator:
+    name: Android emulator (API 33)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install NDK, CMake and glslc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          ls "$ANDROID_NDK_LATEST_HOME" >/dev/null
+      - name: Compile the shaders
+        run: |
+          mkdir -p android/app/src/main/assets/shaders
+          for s in hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert \
+                   head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag; do
+            glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
+              -o "android/app/src/main/assets/shaders/$s.spv"
+          done
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+      - name: Run headless for 15 s and capture a screenshot
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am start -n com.silkcrowd.renderer/.MainActivity \
+              --ez headless true --ei seconds 15
+            sleep 20
+            adb exec-out screencap -p > artifacts/android.png
+            adb logcat -d | grep -i silkrowd | tail -40
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-android
+          path: artifacts/*.png
+
+  update-readme:
+    name: Update the README screenshot table
+    needs: [linux, windows, macos, android-emulator]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshots-*
+          path: docs/images/ci
+      - name: Composite the table
+        run: python3 tools/update_readme.py docs/images/ci
+      - name: Commit the updated README
+        run: |
+          git config user.name  "SilkCrowd CI"
+          git config user.email "ci@silkcrowd.invalid"
+          git add README.md docs/images/ci
+          git diff --cached --quiet || git commit -m "ci: refresh the per-platform render table"
+          git push origin HEAD:main
