@@ -51,6 +51,7 @@ struct HairModelUniforms {
     float lodScreen[4];
     float styling0[4];
     float styling1[4];
+    float styling4[4];
     float styling2[4];
     float styling3[4];
     float hairColor[4];
@@ -950,6 +951,10 @@ void HairGpuRenderer::writeModelUniforms(GpuHairModel* model, const HairInstance
     u.styling1[1] = sp.curlRadius;
     u.styling1[2] = sp.frizz;
     u.styling1[3] = sp.frizzFrequency;
+    u.styling4[0] = sp.clumpRadiusM;
+    u.styling4[1] = sp.curlRadiusM;
+    u.styling4[2] = 0.0f;
+    u.styling4[3] = 0.0f;
     u.styling2[0] = sp.straightness;
     u.styling2[1] = sp.rootFade;
     u.styling2[2] = sp.lengthJitter;

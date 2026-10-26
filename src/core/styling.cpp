@@ -298,9 +298,11 @@ StylingParams StylingParams::fromPreset(int preset, uint32_t seed) {
         case 1:  // wavy
             p.clumping = 0.45f; p.curl = 0.30f; p.frizz = 0.08f; p.straightness = 0.10f;
             p.curlFrequency = 2.2f; p.color = {0.28f, 0.16f, 0.08f}; break;
-        case 2:  // curly
-            p.clumping = 0.40f; p.curl = 0.62f; p.frizz = 0.18f;
-            p.curlFrequency = 4.5f; p.color = {0.13f, 0.07f, 0.04f}; break;
+        case 2:  // curly: ringlets, not fuzz
+            p.clumping = 0.85f; p.clumpScale = 7.0f; p.clumpTipTightness = 1.1f;
+            p.curl = 1.0f; p.curlRadiusM = 0.0085f; p.curlFrequency = 9.0f;
+            p.clumpRadiusM = 0.0045f; p.frizz = 0.10f;
+            p.color = {0.13f, 0.07f, 0.04f}; break;
         case 3:  // afro / coily
             p.clumping = 0.75f; p.curl = 0.85f; p.frizz = 0.35f; p.volume = 0.35f;
             p.curlFrequency = 7.0f; p.clumpScale = 10.0f; p.color = {0.10f, 0.06f, 0.04f}; break;
@@ -311,10 +313,14 @@ StylingParams StylingParams::fromPreset(int preset, uint32_t seed) {
             p.clumping = 0.88f; p.clumpScale = 3.0f; p.clumpTipTightness = 3.0f;
             p.curl = 0.12f; p.frizz = 0.07f; p.color = {0.20f, 0.11f, 0.06f}; break;
         case 6:  // blonde beach waves
-            p.clumping = 0.35f; p.curl = 0.40f; p.frizz = 0.14f;
-            p.curlFrequency = 2.8f; p.color = {0.62f, 0.46f, 0.24f}; p.melanin = 0.25f; break;
+            p.clumping = 0.62f; p.clumpScale = 5.0f; p.curl = 0.75f;
+            p.curlRadiusM = 0.0045f; p.curlFrequency = 3.4f;
+            p.clumpRadiusM = 0.0035f; p.frizz = 0.12f;
+            p.color = {0.62f, 0.46f, 0.24f}; p.melanin = 0.25f; break;
         case 7:  // red curls
-            p.clumping = 0.50f; p.curl = 0.55f; p.frizz = 0.20f; p.curlFrequency = 5.0f;
+            p.clumping = 0.82f; p.clumpScale = 8.0f; p.clumpTipTightness = 1.2f;
+            p.curl = 1.0f; p.curlRadiusM = 0.0090f; p.curlFrequency = 8.0f;
+            p.clumpRadiusM = 0.0048f; p.frizz = 0.12f; p.curlFrequency = 8.0f;
             p.color = {0.45f, 0.16f, 0.06f}; p.melanin = 0.45f; p.redness = 0.85f; break;
         case 8:  // short pixie
             p.clumping = 0.30f; p.curl = 0.10f; p.frizz = 0.10f; p.lengthJitter = 0.06f;
@@ -327,7 +333,7 @@ StylingParams StylingParams::fromPreset(int preset, uint32_t seed) {
     p.clumping = clampf(p.clumping + (r0 - 0.5f) * 0.20f, 0.0f, 1.0f);
     p.curl = clampf(p.curl * (0.7f + 0.6f * r1), 0.0f, 1.2f);
     p.frizz = clampf(p.frizz * (0.6f + 0.8f * r2), 0.0f, 0.6f);
-    p.curlFrequency = clampf(p.curlFrequency * (0.8f + 0.5f * r3), 0.4f, 9.0f);
+    p.curlFrequency = clampf(p.curlFrequency * (0.8f + 0.5f * r3), 0.4f, 16.0f);
     p.lengthJitter = clampf(p.lengthJitter, 0.0f, 0.5f);
     return p;
 }
@@ -351,7 +357,17 @@ StrandStylingState makeStrandStylingState(const StylingParams& p, Vec2 uv, uint3
 
     const float a = hashToFloat(pcgHash(s.seed + 1u)) * 2.0f * kPi;
     s.randomDir = Vec2(std::cos(a), std::sin(a));
-    s.phase = hashToFloat(pcgHash(s.seed + 2u)) * 2.0f * kPi;
+    // The curl phase is *shared by the clump* (with a small per-strand jitter), so the
+    // strands of one clump wind together into a ringlet instead of each frizzing on its
+    // own. This one change is the difference between curls and fuzz.
+    s.phase = hashToFloat(pcgHash(static_cast<uint32_t>(cx) * 4099u +
+                                 static_cast<uint32_t>(cy) * 3571u + 2u)) *
+                  2.0f * kPi +
+              (hashToFloat(pcgHash(s.seed + 2u)) - 0.5f) * 0.55f;
+    // A fixed point inside the clump's tube, so the strands pack rather than coincide.
+    const float r = std::sqrt(hashToFloat(pcgHash(s.seed + 5u)));
+    const float ta = hashToFloat(pcgHash(s.seed + 6u)) * 2.0f * kPi;
+    s.clumpDisk = Vec2(std::cos(ta) * r, std::sin(ta) * r);
     s.lengthScale = 1.0f - p.lengthJitter * hashToFloat(pcgHash(s.seed + 3u));
     s.thicknessScale = 0.75f + 0.5f * hashToFloat(pcgHash(s.seed + 4u));
     return s;
@@ -382,6 +398,16 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
                              std::pow(w, p.clumpTipTightness) * 0.55f;
         d += toCenter * weight * 2.0f;
     }
+    // The tube: every strand of a clump keeps its own place across the lock's cross-section
+    // for the whole length, so the clump is a bundle of fibres and not a fan.
+    Vec3 tube = Mp * Vec3(s.clumpDisk.x, s.clumpDisk.y, 0.0f) * (p.clumpRadiusM * ramp);
+    // Ringlet helix, in metres, around the (already clumped) centre line.
+    Vec3 helix(0, 0, 0);
+    if (p.curlRadiusM > 0.0f && p.curl != 0.0f) {
+        const float phase = 2.0f * kPi * p.curlFrequency * w + s.phase;
+        helix = Mp * Vec3(std::cos(phase), std::sin(phase), 0.0f) *
+                (p.curlRadiusM * clampf(p.curl, 0.0f, 1.2f) * ramp);
+    }
 
     // Frizz: high-frequency perturbation, per vertex.
     if (p.frizz > 0.0f) {
@@ -397,7 +423,7 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
 
     // Volume: puff outward (away from the bundle center) as the strand grows.
     // Styling amplitudes are converted to object space here (Section 3.4).
-    Vec3 offset = Mp * Vec3(d.x, d.y, 0.0f) * p.amplitudeScale;
+    Vec3 offset = Mp * Vec3(d.x, d.y, 0.0f) * p.amplitudeScale + tube + helix;
     if (p.volume != 0.0f) {
         offset = offset * (1.0f + p.volume * ramp * 0.5f);
     }

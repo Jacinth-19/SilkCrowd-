@@ -47,7 +47,7 @@ inline Vec3 skyColor(const Scene& s, Vec3 dir) {
 
 // Kajiya-Kay diffuse plus two Marschner-style longitudinal lobes.
 inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& scene,
-                      const StylingParams& sp, float w, float ao) {
+                      const StylingParams& sp, float w, float ao, float sunVisibility = 1.0f) {
     const Vec3 T = normalize(tangent);
     const Vec3 L = scene.sunDirection;
     const Vec3 V = normalize(viewDir);
@@ -62,7 +62,8 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     const Vec3 albedo = lerp(rootTint, tipTint, saturate(w * 1.15f + 0.15f));
 
     const float sinTL = std::sqrt(saturate(1.0f - dot(T, L) * dot(T, L)));
-    Vec3 color = albedo * scene.sunColor * (sinTL * scene.sunIntensity * 0.22f * ao);
+    Vec3 color = albedo * scene.sunColor *
+                 (sinTL * scene.sunIntensity * 0.22f * ao * sunVisibility);
 
     // Shifted-tangent specular lobes: R towards the root, TRT towards the tip.
     auto lobe = [&](float shift, float exponent, float gain) {
@@ -80,7 +81,7 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     const float spec = lobe(0.12f, 78.0f, 0.30f) + lobe(-0.16f, 22.0f, 0.13f) +
                        lobe(0.04f, 6.0f, 0.025f);
     const Vec3 specColor = lerp(Vec3(1.0f, 0.96f, 0.90f), sp.color * 3.0f + Vec3(0.1f), 0.45f);
-    color += specColor * scene.sunColor * (spec * scene.sunIntensity * 0.22f * ao);
+    color += specColor * scene.sunColor * (spec * scene.sunIntensity * 0.22f * ao * sunVisibility);
 
     // Sky ambient (approximate IBL).
     Vec3 nApprox = normalize(cross(T, normalize(cross(T, V) + Vec3(1e-5f, 0, 0))));
@@ -89,6 +90,199 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     const Vec3 ambient = lerp(scene.skyHorizon * 0.30f, scene.skyZenith * 0.85f, up);
     color += albedo * ambient * (0.30f + 0.35f * ao);
     return color;
+}
+
+// =============================================================================
+//  Hair self-shadowing
+//
+//  Hair is not an opaque surface: light dies a few millimetres into it, which is why a
+//  real hairstyle has a bright outer shell, dark clump interiors and a hard shadow thrown
+//  onto the forehead, the cheek and the neck. The renderer reproduces that with one
+//  light-space depth buffer of the *hair mesh* (the styled volume's envelope, not the
+//  strands), sampled with a penetration distance: a sample is lit if it lies within
+//  `penetration` of the envelope along the light, and everything deeper is occluded.
+//  That single rule gives all three effects -- shell lit, interior dark, face shadowed --
+//  for a few thousand rasterised quads per model.
+// =============================================================================
+struct HairShadow {
+    int size = 0;
+    Vec3 center{0, 0, 0};
+    Vec3 axisU{1, 0, 0}, axisV{0, 1, 0}, axisW{0, 0, 1};   // axisW points towards the light
+    float extent = 0.1f;                                   // half-size of the light-space box
+    float depthLo = 0.0f, depthHi = 1.0f;
+    std::vector<float> depth;                              // depth of the nearest caster
+    bool valid = false;
+
+    void build(const Scene& scene, int resolution, bool includeHead);
+    void addHairMesh(const HairMesh& mesh, const Mat4* xform, uint32_t firstLayer);
+    void addMesh(const Mesh& mesh, const Mat4* xform);
+    void addTriangle(Vec3 a, Vec3 b, Vec3 c);
+    float casterDepth(Vec3 p) const;
+    // 1 where the point sees the sun, 0 deep inside the hair.
+    float visibility(Vec3 p, float penetration) const;
+};
+
+void HairShadow::build(const Scene& scene, int resolution, bool includeHead) {
+    valid = false;
+    Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+    auto grow = [&](const Vec3& p) {
+        lo = Vec3(std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z));
+        hi = Vec3(std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z));
+    };
+    bool any = false;
+    for (const auto& inst : scene.hair) {
+        Vec3 mlo, mhi;
+        inst->mesh.bounds(&mlo, &mhi);
+        for (int c = 0; c < 8; ++c) {
+            const Vec3 corner((c & 1) ? mhi.x : mlo.x, (c & 2) ? mhi.y : mlo.y,
+                              (c & 4) ? mhi.z : mlo.z);
+            grow(inst->transform.transformPoint(corner));
+        }
+        any = true;
+    }
+    if (!any) return;
+    // The head is included in the caster set so that the hair also shadows the collar and
+    // the shoulders below it; the hair envelope itself is what shadows the face.
+    if (includeHead && !scene.head.positions.empty())
+        for (const Vec3& p : scene.head.positions) grow(p);
+    for (const auto& inst : scene.hair)
+        if (!scene.head.positions.empty())
+            for (const Vec3& p : scene.head.positions) grow(inst->transform.transformPoint(p));
+
+    center = (lo + hi) * 0.5f;
+    axisW = normalize(scene.sunDirection);
+    const Vec3 reference = std::fabs(axisW.y) > 0.9f ? Vec3(1, 0, 0) : Vec3(0, 1, 0);
+    axisU = normalize(cross(reference, axisW));
+    axisV = cross(axisW, axisU);
+    extent = 0.0f;
+    for (const Vec3& corner : {Vec3(lo.x, lo.y, lo.z), Vec3(hi.x, hi.y, hi.z),
+                               Vec3(lo.x, hi.y, lo.z), Vec3(hi.x, lo.y, hi.z),
+                               Vec3(lo.x, lo.y, hi.z), Vec3(hi.x, hi.y, lo.z)}) {
+        const Vec3 d = corner - center;
+        extent = std::max({extent, std::fabs(dot(d, axisU)), std::fabs(dot(d, axisV))});
+    }
+    extent *= 1.06f;
+    if (extent <= 0.0f) return;
+    size = resolution;
+    depth.assign(static_cast<size_t>(size) * size, -1e30f);
+    depthLo = 1e30f;
+    depthHi = -1e30f;
+    for (const Vec3& corner : {Vec3(lo.x, lo.y, lo.z), Vec3(hi.x, hi.y, hi.z)}) {
+        const float d = dot(corner - center, axisW);
+        depthLo = std::min(depthLo, d);
+        depthHi = std::max(depthHi, d);
+    }
+    valid = true;
+}
+
+void HairShadow::addTriangle(Vec3 a, Vec3 b, Vec3 c) {
+    const float scale = static_cast<float>(size) / (2.0f * extent);
+    float x[3], y[3], d[3];
+    const Vec3 p[3] = {a, b, c};
+    for (int k = 0; k < 3; ++k) {
+        const Vec3 q = p[k] - center;
+        x[k] = (dot(q, axisU) + extent) * scale;
+        y[k] = (dot(q, axisV) + extent) * scale;
+        d[k] = dot(q, axisW);
+    }
+    const float area = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
+    if (std::fabs(area) < 1e-7f) return;
+    const float inv = 1.0f / area;
+    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({x[0], x[1], x[2]}))));
+    const int x1 = std::min(size - 1, static_cast<int>(std::ceil(std::max({x[0], x[1], x[2]}))));
+    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({y[0], y[1], y[2]}))));
+    const int y1 = std::min(size - 1, static_cast<int>(std::ceil(std::max({y[0], y[1], y[2]}))));
+    for (int py = y0; py <= y1; ++py) {
+        for (int ix = x0; ix <= x1; ++ix) {
+            const float sx = static_cast<float>(ix) + 0.5f;
+            const float sy = static_cast<float>(py) + 0.5f;
+            const float b0 = ((x[1] - sx) * (y[2] - sy) - (x[2] - sx) * (y[1] - sy)) * inv;
+            const float b1 = ((x[2] - sx) * (y[0] - sy) - (x[0] - sx) * (y[2] - sy)) * inv;
+            if (b0 < 0.0f || b1 < 0.0f || b0 + b1 > 1.0f) continue;
+            float& slot = depth[static_cast<size_t>(py) * size + ix];
+            slot = std::max(slot, b0 * d[0] + b1 * d[1] + (1.0f - b0 - b1) * d[2]);
+        }
+    }
+}
+
+void HairShadow::addMesh(const Mesh& mesh, const Mat4* xform) {
+    if (!valid || mesh.indices.empty()) return;
+    auto world = [&](uint32_t index) {
+        const Vec3 p = mesh.positions[index];
+        return xform ? xform->transformPoint(p) : p;
+    };
+    for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3)
+        addTriangle(world(mesh.indices[t]), world(mesh.indices[t + 1]),
+                    world(mesh.indices[t + 2]));
+}
+
+void HairShadow::addHairMesh(const HairMesh& mesh, const Mat4* xform, uint32_t firstLayer) {
+    if (!valid) return;
+    auto world = [&](uint32_t layer, uint32_t v) {
+        const Vec3 p = mesh.layerVertex(layer, v);
+        return xform ? xform->transformPoint(p) : p;
+    };
+    const uint32_t layers = mesh.numLayers();
+    for (uint32_t l = firstLayer + 1; l < layers; ++l) {
+        for (uint32_t f = 0; f < mesh.numFaces(); ++f) {
+            const HairMeshFace& face = mesh.face(f);
+            const uint32_t n = face.count;
+            for (uint32_t k = 0; k < n; ++k) {
+                const uint32_t a = face.v[k];
+                const uint32_t b = face.v[(k + 1) % n];
+                addTriangle(world(l - 1, a), world(l - 1, b), world(l, b));
+                addTriangle(world(l - 1, a), world(l, b), world(l, a));
+            }
+        }
+    }
+}
+
+float HairShadow::casterDepth(Vec3 p) const {
+    if (!valid) return -1e30f;
+    const Vec3 q = p - center;
+    const float scale = static_cast<float>(size) / (2.0f * extent);
+    const float fx = (dot(q, axisU) + extent) * scale - 0.5f;
+    const float fy = (dot(q, axisV) + extent) * scale - 0.5f;
+    const int x = static_cast<int>(std::floor(fx));
+    const int y = static_cast<int>(std::floor(fy));
+    if (x < 0 || y < 0 || x >= size || y >= size) return -1e30f;
+    return depth[static_cast<size_t>(y) * size + x];
+}
+
+float HairShadow::visibility(Vec3 p, float penetration) const {
+    if (!valid) return 1.0f;
+    // 3x3 taps, so the shadow edge is soft at the resolution of a strand clump rather than
+    // stair-stepped at the resolution of the buffer.
+    const Vec3 q = p - center;
+    const float scale = static_cast<float>(size) / (2.0f * extent);
+    const float fx = (dot(q, axisU) + extent) * scale - 0.5f;
+    const float fy = (dot(q, axisV) + extent) * scale - 0.5f;
+    const int cx = static_cast<int>(std::floor(fx));
+    const int cy = static_cast<int>(std::floor(fy));
+    const int reach = penetration > 0.02f ? 2 : 1;
+    float sum = 0.0f;
+    int taps = 0;
+    for (int dy = -reach; dy <= reach; ++dy) {
+        for (int dx = -reach; dx <= reach; ++dx) {
+            const int x = cx + dx, y = cy + dy;
+            if (x < 0 || y < 0 || x >= size || y >= size) {
+                sum += 1.0f;
+                ++taps;
+                continue;
+            }
+            const float caster = depth[static_cast<size_t>(y) * size + x];
+            if (caster < -1e20f) {
+                sum += 1.0f;
+                ++taps;
+                continue;
+            }
+            // How far behind the envelope this sample is, measured along the light.
+            const float delta = caster - dot(q, axisW);
+            sum += 1.0f - smoothstepf(0.0f, penetration, delta);
+            ++taps;
+        }
+    }
+    return taps > 0 ? sum / static_cast<float>(taps) : 1.0f;
 }
 
 // Cheap value noise, used for skin mottling and hair-colour breakup. Deterministic, so a
@@ -120,7 +314,7 @@ inline float valueNoise(Vec3 p) {
 // analytic face masks for brows, lips, lashes, nostrils and creases.
 inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
                       const Vec3& baseAlbedo, float roughPower, float specGain,
-                      const FaceMasks* masks) {
+                      const FaceMasks* masks, float sunVisibility = 1.0f) {
     // |masks| is null for the neck and shoulders: the same skin model, no face features.
     const FaceMasks none;
     const FaceMasks& fm = masks ? *masks : none;
@@ -162,7 +356,7 @@ inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
     const float wrapDiff = saturate((ndl + 0.42f) / 1.42f);
     const float terminator = std::exp(-ndl * ndl * 6.0f);
     Vec3 diffuse = alb * wrapDiff + Vec3(0.34f, 0.09f, 0.06f) * terminator * 0.26f;
-    diffuse *= scene.sunIntensity * 0.55f;
+    diffuse *= scene.sunIntensity * 0.55f * sunVisibility;
 
     // Cool bounce on the shadow side keeps the form readable instead of crushing to black.
     const float fillNdl = saturate(dot(nrm, fillDir));
@@ -175,7 +369,7 @@ inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
     const float fres = f0 + (1.0f - f0) * std::pow(1.0f - saturate(dot(nrm, V)), 5.0f);
     const float gloss = 1.0f + 2.5f * saturate(fm.lipUpper + fm.lipLower);
     const float spec = (std::pow(nh, roughPower) * 0.55f + std::pow(nh, 10.0f) * 0.05f) *
-                       specGain * gloss;
+                       specGain * gloss * sunVisibility;
 
     const float ao = 1.0f - 0.72f * fm.ao;
     Vec3 color = diffuse * scene.sunColor * ao + Vec3(spec * fres) * scene.sunColor * ao;
@@ -216,7 +410,7 @@ inline Vec3 texelFetch(const Image& image, Vec2 uv) {
 // lips, lashes, brows, the fine red of the ears) instead of from painted masks, so the
 // only things left for the shader are the studio rig, the specular and the scalp.
 inline Vec3 shadeScannedSkin(Vec3 nrm, Vec3 viewDir, const Scene& scene, Vec3 albedo,
-                             float specGain, float scalp) {
+                             float specGain, float scalp, float sunVisibility = 1.0f) {
     const Vec3 V = normalize(viewDir);
     const Vec3 L = scene.sunDirection;
     // The scan's albedo is photographic: it already carries the mottling, the subsurface
@@ -233,8 +427,9 @@ inline Vec3 shadeScannedSkin(Vec3 nrm, Vec3 viewDir, const Scene& scene, Vec3 al
     const float ndl = dot(nrm, keyDir);
     const float wrapDiff = saturate((ndl + 0.42f) / 1.42f);
     const float terminator = std::exp(-ndl * ndl * 6.0f);
-    Vec3 color = albedo * scene.sunColor * (wrapDiff * scene.sunIntensity * 0.55f);
-    color += Vec3(0.34f, 0.09f, 0.06f) * (terminator * 0.16f) * scene.sunColor;
+    Vec3 color = albedo * scene.sunColor * (wrapDiff * scene.sunIntensity * 0.55f) *
+                 sunVisibility;
+    color += Vec3(0.34f, 0.09f, 0.06f) * (terminator * 0.16f) * scene.sunColor * sunVisibility;
 
     const float fill = saturate(dot(nrm, fillDir));
     color += albedo * scene.skyHorizon * (fill * 0.30f + 0.05f);
@@ -434,6 +629,24 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
     const Vec3 camUp = cross(camRight, cam.forward());
     const float tanHalf = std::tan(cam.fovY * 0.5f);
 
+    // ---------------- hair self-shadowing ----------------
+    // One light-space depth buffer of the styled volumes (see HairShadow). The hero is
+    // rendered at 1024^2 over a 0.4 m box -- roughly 0.4 mm per texel, finer than a strand
+    // clump -- while a crowd shares 512^2 over the whole grid, which is still finer than the
+    // characters are on screen.
+    HairShadow shadow;
+    if (options.drawShadows && options.drawHair && !scene.hair.empty()) {
+        shadow.build(scene, scene.hair.size() > 8 ? 512 : 1024, options.drawHead);
+        for (const auto& inst : scene.hair) {
+            const uint32_t layers = inst->mesh.numLayers();
+            shadow.addHairMesh(inst->mesh, &inst->transform, layers > 2 ? layers - 2 : 0);
+            if (options.drawHead && scene.hair.size() > 1 && !scene.head.positions.empty())
+                shadow.addMesh(scene.head, &inst->transform);
+        }
+        if (options.drawHead && scene.hair.size() <= 1 && !scene.head.positions.empty())
+            shadow.addMesh(scene.head, nullptr);
+    }
+
     // ---------------- background + ground ----------------
     for (int y = 0; y < bh_; ++y) {
         const float sy = ((y + 0.5f) / bh_) * 2.0f - 1.0f;  // -1 at the top
@@ -548,8 +761,12 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                         // dark, or a bald scan would show a bald head at the parting.
                         const Vec2 uvHere = uv[0] * b0 + uv[1] * b1 + uv[2] * b2;
                         const float scalpHere = scalp[0] * b0 + scalp[1] * b1 + scalp[2] * b2;
+                        // Hair shadows the face: the same light-space buffer, with a
+                        // shorter penetration (skin is opaque, so only the depth gap to
+                        // the hair above it matters).
+                        const float lit = shadow.visibility(pos, 0.004f);
                         s.color = shadeScannedSkin(nrm, V, scene, texelFetch(scene.skinAlbedo, uvHere),
-                                                   specGain, scalpHere);
+                                                   specGain, scalpHere, lit);
                         s.depth = z;
                         continue;
                     }
@@ -560,7 +777,8 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                         const Vec3 local = invXform.transformPoint(pos) - headCenter;
                         const FaceMasks fm = faceMasks ? headFaceMasks(local) : FaceMasks{};
                         s.color = shadeSkin(local, nrm, V, scene, baseAlbedo, specPower, specGain,
-                                            faceMasks ? &fm : nullptr);
+                                            faceMasks ? &fm : nullptr,
+                                            shadow.visibility(pos, 0.006f));
                         s.depth = z;
                         continue;
                     }
@@ -749,9 +967,15 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     const Vec3 p = inst.transform.transformPoint(g.vertices[k].position);
                     const Vec3 t = normalize(transformDir(inst.transform, g.vertices[k].tangent));
                     const Vec3 V = normalize(camPos - p);
-                    const float ao = 0.5f + 0.5f * saturate(g.vertices[k].w * 1.5f);
+                    // Root-to-tip ramp (light penetrates a fibre at its tip) times the
+                    // volumetric self-shadow: a sample 12 mm inside the hair envelope is
+                    // in the dark of the hairstyle, the outer shell sees the sun.
+                    const float ramp = 0.55f + 0.45f * saturate(g.vertices[k].w * 1.6f);
+                    const float lit = shadow.visibility(p, 0.012f);
+                    const float sky = shadow.visibility(p, 0.030f);
+                    const float ao = ramp * (0.30f + 0.70f * sky);
                     vcolor[static_cast<size_t>(k)] =
-                        shadeHair(t, p, V, scene, spj, g.vertices[k].w, ao);
+                        shadeHair(t, p, V, scene, spj, g.vertices[k].w, ao, lit);
                 }
                 // ---- ribbon rasterisation -------------------------------------------
                 // Each strand vertex strip is rasterised as a soft-edged capsule along

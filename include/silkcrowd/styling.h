@@ -59,6 +59,13 @@ struct StylingParams {
     float curl = 0.35f;          // amplitude in object-space units
     float curlFrequency = 2.5f;  // turns along the strand
     float curlRadius = 0.6f;     // amount of radial (v) offset relative to tangent offset
+    // Helix radius in *metres*. This is what turns a wave into a ringlet: a curl whose
+    // radius is 1-2 mm is frizz, 6-10 mm is a ringlet. It is authored in object space
+    // (Section 3.4) so a short pixie and a long curly style curl at the same real size.
+    float curlRadiusM = 0.0f;
+    // Clump tube radius in metres: strands of one clump are packed into a tube of this
+    // radius instead of collapsing onto a line, which is what a lock of hair actually is.
+    float clumpRadiusM = 0.0015f;
     // frizz: high-frequency random offsets
     float frizz = 0.12f;
     float frizzFrequency = 6.0f;
@@ -86,6 +93,9 @@ struct StrandStylingState {
     Vec2 uv{0.5f, 0.5f};       // root uv styling coordinate
     Vec2 clumpUV{0.5f, 0.5f};  // clump center in uv space
     Vec2 randomDir{0.0f, 0.0f};
+    // Where this strand sits inside its clump's cross-section (a point in the unit disk,
+    // fixed for the strand's whole length: a lock of hair is a tube of fibres).
+    Vec2 clumpDisk{0.0f, 0.0f};
     float phase = 0.0f;
     float lengthScale = 1.0f;
     float thicknessScale = 1.0f;

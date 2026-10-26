@@ -108,7 +108,8 @@ void main() {
         float w = sampleW(st, t);                     // single lookup (no intermediates)
         mat3 Mp = stylingMatrix(st, t);               // u_hat, v_hat, w_hat
         vec2 disp = styleDisplacement(state, w, int(k));
-        pos[k] = base + Mp * vec3(disp, 0.0);
+        vec3 dispObject = styleDisplacementObject(state, w);
+        pos[k] = base + Mp * vec3(disp, 0.0) + Mp * dispObject;
         morphed[k] = pos[k];
         wCoord[k] = v;
     }

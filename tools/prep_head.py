@@ -220,11 +220,111 @@ def fit_to_silk_space(positions: bytes, vertex_count: int) -> tuple[bytes, dict]
     return bytes(out), info
 
 
+def texture_skin_space(positions: bytes, uvs: bytes, indices: bytes, vertex_count: int,
+                       index_count: int, tw: int, th: int, origin: tuple, scale: float):
+    """Rasterises the mesh in texture space, returning a 3D position per texel.
+
+    A photogrammetry texture is one atlas: to edit a *part of the face* (the beard shadow)
+    the tool has to know which texel belongs to which point of the head, and the only way to
+    know that is to rasterise the UV triangles. Uncovered texels keep None.
+    """
+    pts = struct.unpack(f"<{vertex_count * 3}f", positions)
+    tex = struct.unpack(f"<{vertex_count * 2}f", uvs)
+    idx = struct.unpack(f"<{index_count}H", indices)
+    space: list = [None] * (tw * th)
+    for t in range(0, index_count, 3):
+        i0, i1, i2 = idx[t], idx[t + 1], idx[t + 2]
+        u = [tex[i0 * 2] * tw, tex[i1 * 2] * tw, tex[i2 * 2] * tw]
+        v = [tex[i0 * 2 + 1] * th, tex[i1 * 2 + 1] * th, tex[i2 * 2 + 1] * th]
+        area = (u[1] - u[0]) * (v[2] - v[0]) - (u[2] - u[0]) * (v[1] - v[0])
+        if abs(area) < 1e-9:
+            continue
+        inv = 1.0 / area
+        x0 = max(0, int(min(u))); x1 = min(tw - 1, int(max(u)) + 1)
+        y0 = max(0, int(min(v))); y1 = min(th - 1, int(max(v)) + 1)
+        p = [(pts[i0 * 3], pts[i0 * 3 + 1], pts[i0 * 3 + 2]),
+             (pts[i1 * 3], pts[i1 * 3 + 1], pts[i1 * 3 + 2]),
+             (pts[i2 * 3], pts[i2 * 3 + 1], pts[i2 * 3 + 2])]
+        for py in range(y0, y1 + 1):
+            for px in range(x0, x1 + 1):
+                sx, sy = px + 0.5, py + 0.5
+                b0 = ((u[1] - sx) * (v[2] - sy) - (u[2] - sx) * (v[1] - sy)) * inv
+                b1 = ((u[2] - sx) * (v[0] - sy) - (u[0] - sx) * (v[2] - sy)) * inv
+                b2 = 1.0 - b0 - b1
+                if b0 < 0 or b1 < 0 or b2 < 0:
+                    continue
+                space[py * tw + px] = (b0 * p[0][0] + b1 * p[1][0] + b2 * p[2][0],
+                                       b0 * p[0][1] + b1 * p[1][1] + b2 * p[2][1],
+                                       b0 * p[0][2] + b1 * p[1][2] + b2 * p[2][2])
+    return space
+
+
+def digital_shave(texels: bytearray, space: list, tw: int, th: int) -> int:
+    """Removes the five-o'clock shadow from the scan's texture, in texture space.
+
+    The scan was taken with a day's growth on the jaw, and a beard shadow is the strongest
+    single "this is a man" cue on the face. The follicle detail is kept -- it is what makes
+    the skin read as skin at portrait distance -- but the blue-grey of the stubble is
+    replaced by the complexion measured on the cheek, so what is left is the fine texture
+    of a shaved face. Lips are protected by their saturation: they are the only strongly
+    red pixels in the region.
+    """
+    # Complexion reference: the cheek, sampled where the mask definitely does not apply.
+    ref_r = ref_g = ref_b = 0.0
+    n = 0
+    for i in range(0, tw * th, 7):
+        p = space[i]
+        if p is None:
+            continue
+        x, y, z = p
+        if -0.01 > y > -0.035 and 0.02 < z and 0.03 < abs(x) < 0.07:
+            o = i * 3
+            ref_r += texels[o]; ref_g += texels[o + 1]; ref_b += texels[o + 2]
+            n += 1
+    if n < 50:
+        return 0
+    ref = (ref_r / n, ref_g / n, ref_b / n)
+    touched = 0
+    for i, p in enumerate(space):
+        if p is None:
+            continue
+        x, y, z = p
+        # Jaw, chin and moustache: in front of the ears, below the nose, above the chin
+        # underside, and fattened out towards the cheeks by the second term.
+        if not (-0.108 < y < 0.010 and z > -0.015):
+            continue
+        if abs(x) > 0.085:
+            continue
+        edge = min(1.0, (0.010 - y) / 0.012) * min(1.0, (y + 0.108) / 0.014)
+        edge *= min(1.0, (z + 0.015) / 0.014)
+        if edge <= 0.0:
+            continue
+        # The lips keep their colour: they are a *form* on the face, not a hair shadow,
+        # and re-tinting them would leave a mannequin mouth.
+        if abs(x) < 0.031 and -0.059 < y < -0.027 and z > 0.068:
+            continue
+        o = i * 3
+        r, g, b = texels[o], texels[o + 1], texels[o + 2]
+        # Keep the texture's detail, replace its colour: luminance is preserved at 45 %.
+        luma = (0.30 * r + 0.59 * g + 0.11 * b) / 255.0
+        ref_luma = (0.30 * ref[0] + 0.59 * ref[1] + 0.11 * ref[2]) / 255.0
+        gain = (luma / ref_luma) if ref_luma > 1e-3 else 1.0
+        detail = 1.0 + 0.45 * (gain - 1.0)
+        mix = 0.90 * edge
+        for c in range(3):
+            target = ref[c] * detail * 1.06
+            texels[o + c] = int(max(0, min(255, texels[o + c] * (1.0 - mix) + target * mix)))
+        touched += 1
+    return touched
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("source", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--texture-size", type=int, default=1024)
+    ap.add_argument("--no-shave", action="store_true",
+                    help="keep the scan's stubble instead of digitally shaving it")
     ap.add_argument("--no-fit", action="store_true",
                     help="keep the scan's own scale and origin (debugging only)")
     args = ap.parse_args(argv[1:])
@@ -257,6 +357,12 @@ def main(argv: list[str]) -> int:
     width, height, channels, rows = read_png(image_bytes)
     factor = max(1, width // args.texture_size)
     tw, th, texels = downsample(width, height, channels, rows, factor)
+    texels = bytearray(texels)
+    if not args.no_shave:
+        space = texture_skin_space(positions, uvs, indices, vertex_count, index_count, tw, th,
+                                   None, 1.0)
+        shaved = digital_shave(texels, space, tw, th)
+        print(f"digital shave: {shaved} texels of stubble re-tinted to the cheek complexion")
     png = write_png(tw, th, texels)
     print(f"diffuse {width}x{height} -> {tw}x{th} ({len(png)/1e6:.2f} MB PNG)")
 

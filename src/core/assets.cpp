@@ -5,6 +5,7 @@
 
 #include "silkcrowd/gltf.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 
@@ -324,7 +325,10 @@ bool HeadModel::loadScan(const std::string& glbPath, std::string* error) {
     Mesh mesh = asset.mesh;
     float crown = -1e30f;
     for (const Vec3& p : mesh.positions) crown = std::max(crown, p.y);
-    center_ = Vec3(0.0f, crown - 0.058f, 0.0f);
+    // Half way down the head: the ear canal, which is the point a real cranium is
+    // star-shaped around. tools/prep_head.py places the crown at 0.128 m and the chin at
+    // about -0.079 m, so half the head height below the crown is where the ears are.
+    center_ = Vec3(0.0f, crown - 0.100f, 0.0f);
     radius_ = 0.11f;
     float maxR = 0.0f;
     for (const Vec3& p : mesh.positions) maxR = std::max(maxR, length(p - center_));
@@ -407,6 +411,11 @@ void HeadModel::buildScanDepthMap() {
         const float v[3] = {ph[0] / kMaxPhi * V, ph[1] / kMaxPhi * V, ph[2] / kMaxPhi * V};
         const float area = (u[1] - u[0]) * (v[2] - v[0]) - (u[2] - u[0]) * (v[1] - v[0]);
         if (std::fabs(area) < 1e-6f) continue;
+        // A triangle that still spans most of the azimuth after unwrapping crossed the
+        // seam in a way that cannot be rasterised as one piece; skipping it leaves a hole
+        // the dilation pass fills, whereas rasterising it would smear a distant radius
+        // (the back of the head) across the crown of the map.
+        if (std::max({u[0], u[1], u[2]}) - std::min({u[0], u[1], u[2]}) > 0.75f * U) continue;
         const int x0 = static_cast<int>(std::floor(std::min({u[0], u[1], u[2]})));
         const int x1 = static_cast<int>(std::ceil(std::max({u[0], u[1], u[2]})));
         const int y0 = static_cast<int>(std::floor(std::min({v[0], v[1], v[2]})));
@@ -425,9 +434,24 @@ void HeadModel::buildScanDepthMap() {
         }
     }
 
+    if (std::getenv("SILKCROWD_DEBUG_DEPTH")) {
+        for (int y = 0; y < 8; ++y) {
+            float lo = 1e9f, hi = 0.0f;
+            int n = 0;
+            for (int x = 0; x < U; ++x) {
+                const float d = depth_[static_cast<size_t>(y) * U + x];
+                if (d <= 0.0f) continue;
+                lo = std::min(lo, d);
+                hi = std::max(hi, d);
+                ++n;
+            }
+            std::fprintf(stderr, "depth row %d: n=%d lo=%.4f hi=%.4f\n", y, n, n ? lo : 0.0f, hi);
+        }
+    }
+
     // Cells a triangle does not cover (the raster is coarser than the scan's triangles are
     // small) are filled from their neighbours, so the bilinear lookup never crosses a gap.
-    for (int pass = 0; pass < 3; ++pass) {
+    for (int pass = 0; pass < 12; ++pass) {
         std::vector<float> next = depth_;
         for (int y = 0; y < V; ++y) {
             for (int x = 0; x < U; ++x) {
@@ -799,104 +823,127 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
     }
     mesh.computeScalpNormals();
 
-    // Extrusion layers. A hair mesh's layers describe the hair *volume*: the first
-    // layer leaves the scalp along the normal, the following layers turn towards the
-    // direction in which hair falls, so that the tips hang around the head instead of
-    // forming a cone. Called "the outer layers define the hairdo" in the paper.
+    // Extrusion layers. A hair mesh's layers describe the hair *volume*: the root layer is
+    // the scalp, the outer layers are the surface the hair actually has (Section 2.2).
+    //
+    // The path of every strand is authored in the two phases hair really goes through:
+    //
+    //   1. it lies on the scalp from its root until the fall line (just above the ear),
+    //      keeping a few millimetres of stand-off so the straight 4-gons between layer
+    //      slices do not cut inside the skull;
+    //   2. past the fall line it leaves the surface and hangs, holding the silhouette it
+    //      had at the fall line. That is what makes a bob a bob: the head is 16 cm wide at
+    //      its widest point, so hair hanging from there is a cylinder of that width with a
+    //      flat, blunt hem, and it does not wrap around the jaw and neck the way an
+    //      extrusion along the scalp does.
+    //
+    // Both phases are parameterised by *arc length in metres along the strand*, measured
+    // from the crown, so a hem depth is a real distance ("the hair is 21 cm long") rather
+    // than a polar angle that means something different on every part of the head. A
+    // strand rooted at the hairline therefore ends at the same depth as one rooted at the
+    // crown, and the fringe needs no special case beyond being short.
+    const float kArcPerPhi = 0.105f;     // metres of scalp arc per radian (r ~ 10.5 cm)
+    const float kFallPhi = 1.30f;        // just above the top of the ear
+    const float fallArcGlobal = kFallPhi * kArcPerPhi;
     for (int l = 1; l < L; ++l) {
         const float s = static_cast<float>(l) / static_cast<float>(L - 1);
         for (int j = 0; j < nv; ++j) {
             for (int i = 0; i < nu; ++i) {
                 const size_t idx = static_cast<size_t>(j * nu + i);
                 const uint32_t vid = static_cast<uint32_t>(idx);
-                const float front = clampf(std::cos(theta[idx]), 0.0f, 1.0f);  // 1 = face
+                const float th0 = theta[idx];
+                const float phi0 = phi[idx];
+                const float hairline = head.hairlinePhi(th0) + style.hairlineDrop;
+                const float front = clampf(std::cos(th0), 0.0f, 1.0f);   // 1 at the face
                 const float back = 1.0f - front;
-                const float at = std::fabs(theta[idx]);
-                // Side part: everything above/left of the parting line is the bigger
-                // curtain, and the rows on the parting itself are shortened so a line of
-                // scalp shows through.
+                const float at = std::fabs(th0);
+                const float faceW = smoothstepf(0.25f, 0.85f, front);
+                // Rows rooted at the front hairline become the fringe: they leave the scalp
+                // at their root and fall over the forehead instead of continuing down the
+                // side of the head.
+                const float fringeRow =
+                    faceW * smoothstepf(0.86f * hairline, 0.99f * hairline, phi0) *
+                    smoothstepf(1.05f, 0.75f, at);
+
+                // Side part: the rows on the parting are shortened so a fine line of scalp
+                // shows through, and the rest is combed away from it.
                 const float partAt = 0.58f;
                 const float partGap = smoothstepf(0.07f, 0.0f, std::fabs(at - partAt));
 
-                // ---- the hair volume ------------------------------------------------
-                // Layer 0 is the scalp; the outer layers are where the hair *is*. Each
-                // layer is the same anatomical surface evaluated further along the
-                // direction the hair falls (larger phi = towards the hairline and past
-                // it), lifted off the scalp by the style's volume. Following the surface
-                // instead of extruding along one straight direction is what makes this a
-                // hairstyle rather than a cone: a straight extrusion from the crown is a
-                // chord through the skull, so the strands leave the head horizontally and
-                // the whole mesh inflates into a wig.
-                const float kArcPerPhi = 0.10f;          // ~10 cm of arc per radian
-                const float kPhiHang = 2.30f;            // below the ear, at the jaw line
-                const float faceW = smoothstepf(0.25f, 0.85f, front);
-                // The hem is a distance along the surface measured from the crown, so every
-                // strand ends at the same depth no matter where it is rooted: crown strands
-                // are the long ones and the hairline rows only reach the brow. That is how
-                // a real cut works, and it is why the fringe stops at the eyebrow without
-                // any special case.
-                const float hem = 0.16f + 0.62f * style.length;                 // metres
-                const float hemLen = hem * (1.0f + 0.12f * back * style.backBias);
-                float phiEnd = hemLen / kArcPerPhi;
-                // Only the rows that are rooted near the *front hairline* are the fringe. Tying
-                // the short hem to faceW alone left the rows at the crown short as well, and
-                // a short strand at the crown covers nothing - which is what opened a bald
-                // patch beside the parting.
-                const float phi0 = phi[idx];
-                const float fringeW = faceW;
-                const float fringeBase = 1.34f + 0.35f * style.length +
-                                         (theta[idx] - partAt) * 0.16f;   // diagonal fringe
-                phiEnd = phiEnd + (fringeBase - phiEnd) * fringeW;
-                phiEnd *= 1.0f - 0.004f * partGap;   // the parting only opens a thin seam
+                // ---- 1. hem depth, in metres of strand -------------------------------
+                float hemLen = 0.155f + 0.60f * style.length;
+                hemLen *= 1.0f + 0.10f * back * style.backBias;
+                // The fringe is short: it stops at the brow, 3-5 cm below the hairline.
+                hemLen = mixf(hemLen, 0.030f + 0.045f * style.length, fringeRow);
+                // Over the temples and the sides of the face the hair is long again: it
+                // hangs *beside* the face, which is what frames it in the reference bob.
+                hemLen = mixf(0.030f + 0.055f * style.length, hemLen,
+                              smoothstepf(0.62f, 1.02f, at));
                 // A hem is never a machined edge: a slow ripple keeps the boundary from
                 // reading as a cut line.
-                phiEnd += 0.03f * std::sin(theta[idx] * 7.0f) + 0.018f * std::sin(theta[idx] * 13.0f);
-                const float phiStop = std::min(phiEnd, kPhiHang);
-                const float phiHere = std::max(phi0, phi0 + (phiStop - phi0) * s);
-                // Past the jaw line the hair leaves the scalp and hangs. Which way it hangs
-                // depends on where it left the head: hair that comes over the front of the
-                // crown is combed sideways and back over the temples, it does not drop
-                // straight down in front of the face, which is what a purely vertical hang
-                // does. So the hang direction is straightened from "down" (behind the ears)
-                // to "down and across" (at the face).
-                const float hang = std::max(0.0f, phiEnd - kPhiHang) * kArcPerPhi * s;
-                const Vec3 hangDir = Vec3(0.0f, -1.0f, 0.0f);
+                hemLen += 0.004f * std::sin(th0 * 7.0f) + 0.0025f * std::sin(th0 * 13.0f);
+                hemLen *= 1.0f - 0.03f * partGap;
 
-                // Volume: the crown sits close to the skull and the volume belongs to the
-                // body of the hair; the ear is bridged with a local lift, otherwise the
-                // ear pokes through the hair surface and reads as a hole in the head.
-                // There is always at least a few millimetres of stand-off. The layers of a
-                // hair mesh are straight 4-gons between slices, so on a convex scalp they
-                // cut inside the skull; without the stand-off the crown of the head would
-                // be a bald patch of exactly the chord sag (~3 mm).
-                // Near the pole every row of the mesh starts at the same point, so the
-                // 4-gons there are very long and cut deepest inside the skull. A local
-                // extra stand-off keeps the crown of the head covered.
-                const float crownPad = 0.011f * smoothstepf(0.65f, 0.10f, phi0);
-                const float swell = crownPad + 0.009f +
-                                    style.volume * (0.85f * std::sin(kPi * std::min(1.0f, 0.22f + s * 0.78f)) +
-                                                    0.18f * s) * (1.0f - 0.30f * partGap) *
-                                    smoothstepf(0.04f, 0.40f, s);
-                const float earBridge = 0.010f * std::exp(-0.5f * (std::pow((at - 1.53f) / 0.34f, 2.0f) +
-                                                                  std::pow((phiHere - 1.50f) / 0.34f, 2.0f)));
-                // Lateral drift: hair combed away from the parting line.
-                // Zero drift *on* the parting line and growing away from it, otherwise the
-                // two rows either side both peel away and the part opens into a bald patch
-                // instead of a fine line of scalp.
-                const float drift = (at >= partAt ? 1.0f : -1.0f) * 0.030f * s * (1.0f - faceW) *
-                                        smoothstepf(0.02f, 0.16f, std::fabs(at - partAt)) +
-                                    // At the side of the head the hair is combed outward as
-                                    // well, so the ends clear the shoulders instead of
-                                    // intersecting them.
-                                    (theta[idx] >= 0.0f ? 1.0f : -1.0f) * 0.20f * std::pow(s, 1.6f) *
-                                        smoothstepf(0.9f, 1.5f, phiHere);
-                const float th = theta[idx] + drift;
-                const Vec3 scalpPt = head.surfacePoint(th, phiHere);
+                // ---- 2. where this strand leaves the scalp ---------------------------
+                const float arc0 = phi0 * kArcPerPhi;
+                // The fall line can never be below the hairline: hair leaves the scalp at
+                // the hairline, it does not slide down the forehead first.
+                const float fallArcLimit = (hairline + 0.02f) * kArcPerPhi;
+                float fallArc = std::min(std::max(arc0, fallArcGlobal), fallArcLimit);
+                fallArc = mixf(fallArc, arc0, fringeRow);   // the fringe leaves immediately
+                // Layered cuts (a long style with shorter layers on top) are what stop a
+                // hairstyle from reading as one solid block: the rows rooted higher up the
+                // scalp fall a little sooner, which builds real depth into the volume.
+                fallArc = mixf(fallArc, arc0, 0.35f * smoothstepf(0.15f, 0.75f, phi0) *
+                                                       (1.0f - fringeRow) * style.fall * 0.4f);
+                const float hangLen = std::max(0.012f, hemLen - fallArc);
+                const float totalArc = fallArc + hangLen;
+
+                // ---- 3. the point on the path at layer s -----------------------------
+                const float arc = arc0 + (totalArc - arc0) * s;
+                const float phiHere = std::min(arc / kArcPerPhi, hairline + 0.55f);
+                // Lateral combing accumulates towards the tips: hair leaves the part and
+                // sweeps outwards, and at the nape it is combed out over the collar.
+                const float driftSign = (at >= partAt ? 1.0f : -1.0f);
+                const float drift = (driftSign * 0.055f * (1.0f - faceW) *
+                                         smoothstepf(0.02f, 0.16f, std::fabs(at - partAt)) +
+                                     (th0 >= 0.0f ? 1.0f : -1.0f) * 0.10f *
+                                         smoothstepf(1.30f, 2.10f, phiHere)) *
+                                    s;
+                const float th = th0 + drift;
+                const Vec3 scalpPt = head.surfacePoint(th, std::min(phiHere, fallArc / kArcPerPhi + 0.9f));
                 const Vec3 nHere = normalize(scalpPt - head.center());
-                // Once the hair hangs it also drifts outward, so it clears the jaw and the
-                // shoulders instead of cutting into them.
-                const float flare = hang * (0.22f + 0.25f * style.volume * 10.0f);
-                Vec3 p = scalpPt + nHere * (swell + earBridge + flare) + hangDir * hang;
+                // Volume: a few millimetres of stand-off everywhere (an extrusion cuts
+                // inside a convex scalp), plus the style's body, which is thickest in the
+                // middle of the volume and gone at the root and at the hem.
+                // The volume belongs to the *body* of the hair, not to a hat: it is thin at
+                // the crown, thickest through the middle of the mass and gone at the hem,
+                // and it is thicker on the sides and the back than over the forehead.
+                const float body = style.volume * 0.55f * (0.45f + 0.55f * std::sin(kPi * s)) *
+                                   smoothstepf(0.06f, 0.45f, s) * (1.0f - 0.35f * partGap) *
+                                   (0.55f + 0.45f * smoothstepf(0.10f, 0.75f, phi0));
+                const float standoff = 0.0040f + body;
+                Vec3 p = scalpPt;
+                if (arc > fallArc) {
+                    // Hanging phase: leave the scalp at the fall line and drop. `style.fall`
+                    // bends the drop from "straight out" (0, an afro) to "straight down"
+                    // (1, a bob); the small outward component keeps the hair clear of the
+                    // jaw and the shoulders instead of intersecting them.
+                    const Vec3 anchor = head.surfacePoint(th, fallArc / kArcPerPhi);
+                    const Vec3 nAnchor = normalize(anchor - head.center());
+                    const float drop = arc - fallArc;
+                    const float outward = drop * (0.045f + 0.32f * (1.0f - style.fall));
+                    p = anchor + nAnchor * (standoff + 0.002f) + Vec3(0.0f, -drop, 0.0f) +
+                        nAnchor * outward;
+                    // The hem is cut flat and slightly A-line: the tips kick out by a few
+                    // millimetres, which is what a blow-dry does and what keeps the hem
+                    // from hugging the neck.
+                    const float tip = smoothstepf(0.55f, 1.0f, s);
+                    p += nAnchor * (0.004f * tip * style.fall);
+                    p += Vec3(0.0f, 0.0f, 0.0f);
+                } else {
+                    p = scalpPt + nHere * standoff;
+                }
                 mesh.layerVertexMutable(static_cast<uint32_t>(l), vid) = p;
             }
         }

@@ -42,6 +42,7 @@ layout(std140, set = 1, binding = 0) uniform HairModel {
     vec4 styling1;          // curlFrequency, curlRadius, frizz, frizzFrequency
     vec4 styling2;          // straightness, rootFade, lengthJitter, volume
     vec4 styling3;          // randomOffset, thickness, amplitudeScale, seed
+    vec4 styling4;          // clumpRadiusM, curlRadiusM (object-space, metres), 0, 0
     vec4 hairColor;         // rgb + melanin
     vec4 hairParams;        // strandSeed, strandsPerBundle, maxStrandsPerBundle, flags
 } model;
@@ -189,6 +190,7 @@ struct StrandState {
     vec2 uv;          // root uv styling coordinate
     vec2 clumpUV;     // clump centre in uv space
     vec2 randomDir;
+    vec2 clumpDisk;   // where the strand sits inside its clump's cross-section (unit disk)
     float phase;
     float thicknessScale;
     uint seed;
@@ -202,8 +204,7 @@ StrandState makeStrandState(vec2 uv, uint strandIndex, uint bundle) {
     s.seed = seed;
     float r0 = float((seed >> 8) & 0xFFFFu) * (1.0 / 65536.0);
     float r1 = float((seed >> 16) & 0xFFFFu) * (1.0 / 65536.0);
-    s.phase = r0 * 6.28318530718;
-    s.randomDir = vec2(cos(s.phase), sin(s.phase));
+    s.randomDir = vec2(cos(r0 * 6.28318530718), sin(r0 * 6.28318530718));
     s.thicknessScale = 0.75 + 0.5 * r1;
 
     // Clumping: strands converge towards a shared clump centre defined by a uv-cell grid,
@@ -214,6 +215,14 @@ StrandState makeStrandState(vec2 uv, uint strandIndex, uint bundle) {
     float jy = scHash11(cell.x * 3739.0 + cell.y * 6151.0 + 23.0);
     s.clumpUV = vec2((cell.x + 0.25 + 0.5 * jx) / clumpScale,
                      (cell.y + 0.25 + 0.5 * jy) / clumpScale);
+    // The curl phase is shared by the clump (plus a small per-strand jitter), so a clump
+    // winds into one ringlet instead of every strand frizzing on its own. Mirrors
+    // makeStrandStylingState() in src/core/styling.cpp.
+    s.phase = scHash11(cell.x * 4099.0 + cell.y * 3571.0 + 2.0) * 6.28318530718 +
+              (r1 - 0.5) * 0.55;
+    float diskR = sqrt(float((seed >> 4) & 0xFFFFu) * (1.0 / 65536.0));
+    float diskA = float((seed >> 12) & 0xFFFFu) * (1.0 / 65536.0) * 6.28318530718;
+    s.clumpDisk = vec2(cos(diskA), sin(diskA)) * diskR;
     return s;
 }
 
@@ -253,6 +262,24 @@ vec2 styleDisplacement(in StrandState s, float w, int k) {
     }
     d += s.randomDir * (randomOffset * ramp);
     d *= model.styling3.z;  // object-space amplitude (not scaled by bundle expansion)
+    return d;
+}
+
+// Object-space part of the styling: the clump tube (a lock of hair is a bundle of fibres,
+// not a fan) and the ringlet helix, both authored in metres so that a short pixie and a
+// long curly style curl at the same real size (Section 3.4).
+vec3 styleDisplacementObject(in StrandState s, float w) {
+    float rootFade = model.styling2.y;
+    float ramp = smoothstep(0.0, max(rootFade, 1e-3), w);
+    vec3 d = vec3(0.0);
+    if (model.styling4.x != 0.0) {
+        d += vec3(s.clumpDisk, 0.0) * (model.styling4.x * ramp);
+    }
+    if (model.styling4.y != 0.0 && model.styling0.w != 0.0) {
+        float ph = 6.28318530718 * model.styling1.x * w + s.phase;
+        d += vec3(cos(ph), sin(ph), 0.0) *
+             (model.styling4.y * clamp(model.styling0.w, 0.0, 1.2) * ramp);
+    }
     return d;
 }
 
