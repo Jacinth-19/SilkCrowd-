@@ -192,6 +192,8 @@ struct StrandState {
     vec2 randomDir;
     vec2 clumpDisk;   // where the strand sits inside its clump's cross-section (unit disk)
     float phase;
+    float flyaway;    // 0 = none, 1 = the furthest out of the 8 % that get one
+    float flyawayAngle;
     float thicknessScale;
     uint seed;
 };
@@ -223,6 +225,12 @@ StrandState makeStrandState(vec2 uv, uint strandIndex, uint bundle) {
     float diskR = sqrt(float((seed >> 4) & 0xFFFFu) * (1.0 / 65536.0));
     float diskA = float((seed >> 12) & 0xFFFFu) * (1.0 / 65536.0) * 6.28318530718;
     s.clumpDisk = vec2(cos(diskA), sin(diskA)) * diskR;
+    // Flyaways: 8 % of strands get a tip excursion big enough to leave the hair mesh's own
+    // volume. Derived from the seed only - nothing is stored - and mirrors
+    // makeStrandStylingState() in src/core/styling.cpp.
+    float fly = scHash11(float(seed & 0xFFFFu) * 0.000137 + 9.0);
+    s.flyaway = fly > 0.92 ? (fly - 0.92) / 0.08 : 0.0;
+    s.flyawayAngle = scHash11(float((seed >> 16) & 0xFFFFu) * 0.000211 + 10.0) * 6.28318530718;
     return s;
 }
 
@@ -274,6 +282,11 @@ vec3 styleDisplacementObject(in StrandState s, float w) {
     vec3 d = vec3(0.0);
     if (model.styling4.x != 0.0) {
         d += vec3(s.clumpDisk, 0.0) * (model.styling4.x * ramp);
+    }
+    if (s.flyaway > 0.0) {
+        // In metres, like the clump tube and the ringlet helix.
+        d += vec3(cos(s.flyawayAngle), sin(s.flyawayAngle), 0.0) *
+             (0.034 * s.flyaway * ramp * w * w);
     }
     if (model.styling4.y != 0.0 && model.styling0.w != 0.0) {
         float ph = 6.28318530718 * model.styling1.x * w + s.phase;

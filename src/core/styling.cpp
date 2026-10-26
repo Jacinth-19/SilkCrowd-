@@ -368,6 +368,12 @@ StrandStylingState makeStrandStylingState(const StylingParams& p, Vec2 uv, uint3
     const float r = std::sqrt(hashToFloat(pcgHash(s.seed + 5u)));
     const float ta = hashToFloat(pcgHash(s.seed + 6u)) * 2.0f * kPi;
     s.clumpDisk = Vec2(std::cos(ta) * r, std::sin(ta) * r);
+    // Flyaways: 6 % of strands get a tip excursion large enough to leave the hair mesh's
+    // own volume, which is what breaks a groomed silhouette. Everything about them comes from
+    // the strand's seed, so nothing is stored and the GPU path derives the same values.
+    const float fly = hashToFloat(pcgHash(s.seed + 9u));
+    if (fly > 0.92f) s.flyaway = (fly - 0.92f) / 0.08f;
+    s.flyawayAngle = hashToFloat(pcgHash(s.seed + 10u)) * 2.0f * kPi;
     s.lengthScale = 1.0f - p.lengthJitter * hashToFloat(pcgHash(s.seed + 3u));
     s.thicknessScale = 0.75f + 0.5f * hashToFloat(pcgHash(s.seed + 4u));
     return s;
@@ -423,7 +429,13 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
 
     // Volume: puff outward (away from the bundle center) as the strand grows.
     // Styling amplitudes are converted to object space here (Section 3.4).
-    Vec3 offset = Mp * Vec3(d.x, d.y, 0.0f) * p.amplitudeScale + tube + helix;
+    Vec3 flyaway(0, 0, 0);
+    if (s.flyaway > 0.0f) {
+        // In metres, so a flyaway is the same real length on a pixie and on long curls.
+        flyaway = Mp * Vec3(std::cos(s.flyawayAngle), std::sin(s.flyawayAngle), 0.0f) *
+                  (0.034f * s.flyaway * ramp * w * w);
+    }
+    Vec3 offset = Mp * Vec3(d.x, d.y, 0.0f) * p.amplitudeScale + tube + helix + flyaway;
     if (p.volume != 0.0f) {
         offset = offset * (1.0f + p.volume * ramp * 0.5f);
     }

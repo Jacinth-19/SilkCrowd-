@@ -93,6 +93,10 @@ struct StrandStylingState {
     Vec2 uv{0.5f, 0.5f};       // root uv styling coordinate
     Vec2 clumpUV{0.5f, 0.5f};  // clump center in uv space
     Vec2 randomDir{0.0f, 0.0f};
+    // Flyaways: the fraction of strands (0 = none, 1 = the furthest out of the 6 % that get
+    // one) and the direction of its tip excursion, both derived from the strand's seed.
+    float flyaway = 0.0f;
+    float flyawayAngle = 0.0f;
     // Where this strand sits inside its clump's cross-section (a point in the unit disk,
     // fixed for the strand's whole length: a lock of hair is a tube of fibres).
     Vec2 clumpDisk{0.0f, 0.0f};

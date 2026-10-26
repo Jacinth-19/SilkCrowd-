@@ -284,6 +284,14 @@ a curl whose strands disagree is noise. Curl radius is authored in metres (`curl
 real size. The GPU path runs exactly the same functions (`styleDisplacement()` +
 `styleDisplacementObject()` in `shaders/hair_common.glsl`).
 
+### Flyaways
+
+Eight percent of strands are given a tip excursion of up to 34 mm in a direction hashed from the
+strand's own seed (`StrandStylingState::flyaway`, mirrored in `shaders/hair_common.glsl`), authored
+in metres so a flyaway is the same real length on a pixie and on long curls. It is derived from the
+seed alone - no per-strand data is stored, which is the constraint the paper's representation
+imposes - and it is what stops a groomed style from ending in a perfect curve.
+
 ### Deep self-shadowing
 
 Hair is not an opaque surface: light dies a few millimetres into it. The renderer builds one
@@ -335,9 +343,9 @@ visibly wrong and why. The short version:
 * **functionally** the pipeline is implemented - hair mesh only, Figure 3e slices, Eq. 1-12,
   blue-noise roots, the storage targets - and `--validate` checks it;
 * **visually** a single head is roughly half to two thirds of the reference bar; the gap is
-  concentrated in three places: strand-level detail (ribbons read as brushed, not resolved), curl
-  at clump scale (ours is a waffle, the reference is ringlets), and flyaways (we have none that
-  leave the silhouette);
+  concentrated in two places: strand-level detail (ribbons read as brushed, not resolved) and curl
+  at clump scale (ours is a waffle at mesh scale, the reference is ringlets). Flyaways now exist
+  and leave the silhouette, but they are styled strands rather than loose fibres;
 * **performance** is not compared: the paper's 2 ms is an RTX 4090, this machine has no GPU, and
   the Vulkan path in this repository has never been executed here.
 

@@ -206,6 +206,8 @@ hair or as a wig. Every strand is authored along its own **arc length in metres*
 * the **hem is a distance**, so a hem depth means the same thing everywhere: crown strands are the
   long ones, the hairline rows only reach the brow, and the fringe needs no special case. The fall
   line is clamped to the hairline, so no strand slides down the forehead before it hangs;
+* **flyaways** are 8 % of strands with a tip excursion of up to 34 mm, hashed from the strand's
+  seed only (so nothing is stored and the GPU path derives the same values);
 * **volume** is thin at the crown, thickest through the body of the hair and gone at the hem, and
   is *not* uniformly inflated (a uniform inflation reads as a helmet);
 * the parting drives a hem seam and the lateral drift, which accumulates towards the tips so the
