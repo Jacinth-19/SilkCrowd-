@@ -43,7 +43,7 @@ struct RenderOptions {
     FrameMode frameMode = FrameMode::PerVertexTextures;
     LodParams lod;
     float exposure = 1.05f;
-    float hairAlpha = 0.42f;
+    float hairAlpha = 0.52f;
     bool drawHair = true;
     bool drawHead = true;
     bool drawGround = true;

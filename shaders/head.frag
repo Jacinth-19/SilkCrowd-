@@ -50,6 +50,7 @@ struct FaceMasks {
     float noseSide;
     float blush;
     float ao;
+    float scalp;
 };
 
 // The inverse of the head's parameterisation: theta = 0 faces +Z, +pi/2 is the right ear.
@@ -96,6 +97,8 @@ FaceMasks headFaceMasks(vec3 localPos) {
                  0.25 * bump(at, phi, 0.10, 1.30, 0.10, 0.05));
     m.ao += 0.5 * smoothstep(2.30, 2.70, phi);
     m.ao = sat(m.ao);
+    float hairline = 1.10 + 0.92 * (0.5 - 0.5 * cos(theta));
+    m.scalp = 1.0 - smoothstep(hairline - 0.06, hairline + 0.04, phi);
     return m;
 }
 
@@ -146,6 +149,7 @@ vec3 shadeSkin(vec3 localPos, vec3 nrm, vec3 V, vec3 baseAlbedo, float specGain,
     alb = mix(alb, alb * vec3(0.78, 0.74, 0.74), fm.noseSide * 0.85);
     alb = mix(alb, vec3(0.07, 0.04, 0.035), fm.nostril * 0.9);
     alb = mix(alb, vec3(0.26, 0.11, 0.12), fm.mouthLine * 0.95);
+    alb = mix(alb, vec3(0.028, 0.017, 0.012), fm.scalp * 0.97);
 
     vec3 keyDir = normalize(L + vec3(0.0, 0.15, 0.0));
     vec3 fillDir = normalize(vec3(-keyDir.x * 0.9, 0.25, -keyDir.z * 0.35 + 0.55));

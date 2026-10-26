@@ -118,18 +118,18 @@ devices (see the per-platform table at the end).
 
 | Workload | Strands defined | Strands rendered with LOD | Triangles | Texture storage |
 | --- | --- | --- | --- | --- |
-| Hero head (Figure 10 style) | 39,930 | 23,290 (58.3 %) | 1,490,560 | 0.09 MB |
-| Crowd, 100 heads (Figure 1) | 9,998,570 | 743,558 (7.4 %) | 40,733,248 | **1.61 MB** (14.1-19.1 KB/model) |
+| Hero head (Figure 10 style) | 39,780 | 19,994 (50.3 %) | 1,279,616 | 0.18 MB |
+| Crowd, 100 heads (Figure 1) | 9,998,570 | 735,357 (7.4 %) | 38,017,440 | **1.61 MB** (14.1-19.1 KB/model) |
 | 200 teapots x 50k (Figure 9) | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB (7.7 KB/model) |
 
-Scene build (hair mesh + all five textures for every model) takes 0.26 s for the hero head -
-almost all of it the anatomical head surface, which is evaluated analytically per vertex - 0.32 s
+Scene build (hair mesh + all five textures for every model) takes 0.23 s for the hero head -
+almost all of it the anatomical head surface, which is evaluated analytically per vertex - 0.26 s
 for the 100-head crowd and 10 ms for the 200 teapots. It happens once, at load time.
 
 Rendered-strand fractions grow with resolution and shrink with distance, which is exactly what
 Eq. 7 predicts (`L` is proportional to the vertical resolution `R` and inverse to the distance):
-the same crowd at 800x460 renders 1,139,060 strands (11.4 %) and 72,019,936 triangles, and the
-200 teapots at 800x460 render 1,571,716 strands (15.7 %) and 62,420,992 triangles. The hero head
+the same crowd at 800x460 renders 1,273,075 strands (12.7 %) and 80,492,032 triangles, and the
+200 teapots at 800x460 render 1,776,463 strands (17.8 %) and 80,291,840 triangles. The hero head
 sits closest to the camera, which is why it keeps half of its strands.
 
 | Paper target | Where it comes from | Status here |
@@ -221,6 +221,27 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   until the shape is a fixed point of the solver (a single relaxation pass cannot do it, because a
   compliant constraint set creeps under gravity forever); `--validate` measures the first-frame drop
   with and without it.
+
+### The hairstyle geometry
+
+A hair mesh's outer layers are *not* an extrusion along one straight direction. They are the
+same anatomical head surface evaluated further along the path the hair takes, which is the only
+way a hairstyle reads as hair rather than as a cone around the skull:
+
+* **The hem is a distance, not an angle.** Each layer is evaluated at a larger polar angle than
+  the one below it, so the hair follows the curve of the skull and stops where the *cut* is.
+  Because crown strands have further to travel before they run out of hem, they are automatically
+  the long ones and the hairline rows only reach the brow - which is exactly how a real cut works,
+  and why the fringe stops at the eyebrow without a special case.
+* **Below the jaw line the hair leaves the scalp and hangs** rather than continuing round the
+  head, with the hang direction turning from straight down (nape) towards sideways-and-back (face)
+  so no lock is ever drawn over the eyes.
+* **A side part** drives both the hem (a thin seam of scalp, evaluated with the scalp mask so the
+  seam is dark rather than a bald patch of skin) and the drift that combed hair has away from it.
+* **Stand-off is mandatory.** The layers of a hair mesh are straight quads between four slices, so
+  on a convex scalp they cut *inside* the skull; the error grows quadratically with the layer
+  spacing and is worst at the pole, where every row starts at the same point. The mesh therefore
+  carries a constant stand-off plus a crown term, and the styles use 6 slices rather than 4.
 
 ### What this is not
 

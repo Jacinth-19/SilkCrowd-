@@ -54,8 +54,12 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     const Vec3 H = normalize(L + V);
     (void)position;
 
-    const Vec3 rootTint = sp.color * 0.45f;
-    const Vec3 albedo = lerp(rootTint, sp.color, saturate(w * 1.3f + 0.1f));
+    // Roots read darker than tips (light penetrates the fibre at the ends, and dye is
+    // always densest at the root). This root-to-tip ramp is most of what makes dyed hair
+    // read as hair rather than as coloured plastic.
+    const Vec3 rootTint = sp.color * Vec3(0.52f, 0.50f, 0.50f);
+    const Vec3 tipTint = sp.color * Vec3(1.16f, 1.14f, 1.10f);
+    const Vec3 albedo = lerp(rootTint, tipTint, saturate(w * 1.15f + 0.15f));
 
     const float sinTL = std::sqrt(saturate(1.0f - dot(T, L) * dot(T, L)));
     Vec3 color = albedo * scene.sunColor * (sinTL * scene.sunIntensity * 0.22f * ao);
@@ -66,7 +70,15 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
         const float sinTH = std::sqrt(saturate(1.0f - dot(ts, H) * dot(ts, H)));
         return std::pow(sinTH, exponent) * gain;
     };
-    const float spec = lobe(0.14f, 110.0f, 0.55f) + lobe(-0.18f, 34.0f, 0.22f);
+    // Wide longitudinal lobes. A narrow exponent turns every ribbon into an independent
+    // speck of light (which reads as straw); a wide R lobe and a broad TRT lobe instead
+    // merge into the continuous highlight band that runs around a glossy hairstyle.
+    // The gains are deliberately small: a hairstyle composites dozens of semi-transparent
+    // layers, so a lobe that looks fine on one ribbon accumulates into a blown-out patch
+    // where the surface faces the key light. The wide lobe supplies the band, the narrow
+    // one the glints.
+    const float spec = lobe(0.12f, 78.0f, 0.30f) + lobe(-0.16f, 22.0f, 0.13f) +
+                       lobe(0.04f, 6.0f, 0.025f);
     const Vec3 specColor = lerp(Vec3(1.0f, 0.96f, 0.90f), sp.color * 3.0f + Vec3(0.1f), 0.45f);
     color += specColor * scene.sunColor * (spec * scene.sunIntensity * 0.22f * ao);
 
@@ -135,6 +147,8 @@ inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
     alb = lerp(alb, alb * Vec3(0.78f, 0.74f, 0.74f), fm.noseSide * 0.85f);
     alb = lerp(alb, Vec3(0.07f, 0.04f, 0.035f), fm.nostril * 0.9f);
     alb = lerp(alb, Vec3(0.26f, 0.11f, 0.12f), fm.mouthLine * 0.95f);
+    // Scalp: dark, slightly cooler than the hair it is under, and much rougher.
+    alb = lerp(alb, Vec3(0.028f, 0.017f, 0.012f), fm.scalp * 0.97f);
 
     // ---- studio rig: a warm key (the scene sun), a cool fill from the opposite side and
     // a rim from behind, which is what separates the head from the background.
@@ -167,9 +181,9 @@ inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
     Vec3 color = diffuse * scene.sunColor * ao + Vec3(spec * fres) * scene.sunColor * ao;
 
     // Ambient sky term and the rim.
-    const Vec3 amb = lerp(scene.skyHorizon * 0.40f, scene.skyZenith * 0.88f,
+    const Vec3 amb = lerp(scene.skyHorizon * 0.32f, scene.skyZenith * 0.70f,
                           saturate(nrm.y * 0.5f + 0.5f));
-    color += alb * amb * (0.80f * ao);
+    color += alb * amb * (0.52f * ao);
     const float rim = std::pow(1.0f - saturate(dot(nrm, V)), 3.5f) *
                       saturate(dot(nrm, rimDir));
     color += scene.skyZenith * (rim * 0.65f);
@@ -493,17 +507,17 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
         // mesh as-is.
         if (scene.hair.size() > 1 && !scene.head.positions.empty()) {
             for (const auto& inst : scene.hair) {
-                drawMesh(scene.head, Vec3(0.72f, 0.51f, 0.43f), 60.0f, 0.55f, true, false,
+                drawMesh(scene.head, Vec3(0.655f, 0.45f, 0.37f), 60.0f, 0.55f, true, false,
                          &inst->transform, true);
-                drawMesh(scene.body, Vec3(0.70f, 0.49f, 0.42f), 40.0f, 0.35f, true, false,
+                drawMesh(scene.body, Vec3(0.635f, 0.435f, 0.36f), 40.0f, 0.35f, true, false,
                          &inst->transform);
                 drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, true,
                          &inst->transform);
             }
         } else {
-            drawMesh(scene.head, Vec3(0.72f, 0.51f, 0.43f), 60.0f, 0.55f, true, false, nullptr,
+            drawMesh(scene.head, Vec3(0.655f, 0.45f, 0.37f), 60.0f, 0.55f, true, false, nullptr,
                      true);
-            drawMesh(scene.body, Vec3(0.70f, 0.49f, 0.42f), 40.0f, 0.35f, true);
+            drawMesh(scene.body, Vec3(0.635f, 0.435f, 0.36f), 40.0f, 0.35f, true);
             drawMesh(scene.eyes, Vec3(0.16f, 0.11f, 0.07f), 120.0f, 0.9f, false, /*isEye=*/true);
         }
     }
@@ -533,8 +547,8 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
     int lodCount = 0;
 
     const float ssScale = static_cast<float>(ss);
-    const float minWidthPx = 0.70f * ssScale;
-    const float maxWidthPx = 2.60f * ssScale;
+    const float minWidthPx = 0.80f * ssScale;
+    const float maxWidthPx = 1.45f * ssScale;
 
     std::vector<StrandGeometry> geom;
     std::vector<uint32_t> order;
@@ -629,17 +643,20 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                 const int n = static_cast<int>(g.vertices.size());
                 if (n < 2) continue;
 
-                // Per-strand colour: a dye is never one flat value. A few percent of the
-                // strands are also lifted and lightened so the surface breaks up into
-                // individual hairs and flyaways instead of reading as a solid shell.
+                // Per-strand colour. The dominant variation is *coherent per bundle*
+                // (one clump of hair was dyed together), with only a few percent of
+                // strand-to-strand jitter on top: strong per-strand jitter destroys the
+                // coherent highlight and turns a hairstyle into straw. A small number of
+                // strands are lifted well above the rest to read as flyaways.
+                const float clumpJit = hash13(Vec3(static_cast<float>(f) * 0.517f, 11.3f, 3.7f));
                 const float jit = hash13(Vec3(static_cast<float>(s) * 0.731f + f * 0.113f,
                                               static_cast<float>(f) * 0.517f, 3.7f));
-                const float flyaway = jit > 0.965f ? 1.0f : 0.0f;
+                const float flyaway = jit > 0.972f ? 1.0f : 0.0f;
                 StylingParams spj = inst.styling;
-                const float value = 0.80f + 0.42f * jit + 0.35f * flyaway;
-                spj.color = Vec3(inst.styling.color.x * value * (0.96f + 0.09f * jit),
+                const float value = 0.975f + 0.05f * jit + 0.055f * clumpJit + 0.20f * flyaway;
+                spj.color = Vec3(inst.styling.color.x * value * (0.99f + 0.03f * jit),
                                  inst.styling.color.y * value,
-                                 inst.styling.color.z * value * (1.02f - 0.06f * jit));
+                                 inst.styling.color.z * value * (1.01f - 0.02f * jit));
 
                 // Shading is evaluated once per strand vertex (this is exactly what the
                 // mesh shader does: it shades the 2*ns+2 strip vertices it emits) and
@@ -653,10 +670,18 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     vcolor[static_cast<size_t>(k)] =
                         shadeHair(t, p, V, scene, spj, g.vertices[k].w, ao);
                 }
-                Projected prevA{}, prevB{};
-                Vec3 prevPA, prevPB;
-                Vec3 prevCA, prevCB;
-                Vec3 tangent = transformDir(inst.transform, g.vertices[0].tangent);
+                // ---- ribbon rasterisation -------------------------------------------
+                // Each strand vertex strip is rasterised as a soft-edged capsule along
+                // its screen-space spine instead of as two hard-edged triangles. The
+                // coverage falls off across the ribbon width, so the silhouette of a
+                // hairstyle is smooth before the strand density is high enough for
+                // geometric coverage (which is what makes the difference between straw
+                // and hair), and it tapers at the root and the tip where real fibres are
+                // thinner. A capsule is also cheaper: one distance test instead of two
+                // triangle setups and three barycentric coordinates per fragment.
+                Projected prevC{};
+                Vec3 prevColor(0, 0, 0);
+                float prevHalfWidth = 0.0f;
                 for (int k = 0; k < n; ++k) {
                     const Vec3 p = inst.transform.transformPoint(g.vertices[k].position);
                     const Vec3 t = normalize(transformDir(inst.transform, g.vertices[k].tangent));
@@ -666,66 +691,65 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     side = normalize(side);
                     Vec3 offset = side * g.radius;
 
-                    // Screen-space width clamp (keeps far LOD strands ~1-3 px wide).
+                    // Width clamp: never thinner than about a pixel (a sub-pixel ribbon
+                    // would flicker away), never wider than a few (LOD strands stand in
+                    // for many finer ones, so they are drawn with a proportional width).
                     Projected pc{}, po{};
                     project(p, &pc);
                     project(p + offset, &po);
+                    float halfWidth = 0.9f * ssScale;
                     if (pc.visible && po.visible) {
                         const float pix = std::sqrt((po.x - pc.x) * (po.x - pc.x) +
                                                     (po.y - pc.y) * (po.y - pc.y));
-                        if (pix > maxWidthPx) offset = offset * (maxWidthPx / pix);
-                        else if (pix < minWidthPx) offset = offset * (minWidthPx / std::max(pix, 1e-5f));
+                        const float clamped = clampf(pix, minWidthPx, maxWidthPx);
+                        if (pix > 1e-6f) offset = offset * (clamped / pix);
+                        halfWidth = clamped;
                     }
-                    const Vec3 pa = p - offset, pb = p + offset;
-                    Projected pra{}, prb{};
-                    project(pa, &pra);
-                    project(pb, &prb);
 
-                    if (k > 0 && pra.visible && prb.visible && prevA.visible && prevB.visible) {
-                        const Vec3 c0 = vcolor[static_cast<size_t>(k - 1)];
-                        const Vec3 c1 = vcolor[static_cast<size_t>(k)];
-                        const HairVertexOut quad[4] = {
-                            {prevA.x, prevA.y, prevA.z, prevPA, g.vertices[k - 1].w, prevCA},
-                            {prevB.x, prevB.y, prevB.z, prevPB, g.vertices[k - 1].w, prevCB},
-                            {prb.x, prb.y, prb.z, pb, g.vertices[k].w, c1},
-                            {pra.x, pra.y, pra.z, pa, g.vertices[k].w, c0}};
-                        static const int triIdx[2][3] = {{0, 1, 2}, {0, 2, 3}};
-                        for (int ti = 0; ti < 2; ++ti) {
-                            const HairVertexOut& v0 = quad[triIdx[ti][0]];
-                            const HairVertexOut& v1 = quad[triIdx[ti][1]];
-                            const HairVertexOut& v2 = quad[triIdx[ti][2]];
-                            const float area = (v1.x - v0.x) * (v2.y - v0.y) - (v2.x - v0.x) * (v1.y - v0.y);
-                            if (std::fabs(area) < 1e-9f) continue;
-                            const float invArea = 1.0f / area;
-                            const int x0 = std::max(0, static_cast<int>(std::floor(std::min({v0.x, v1.x, v2.x}))));
-                            const int x1 = std::min(bw_ - 1, static_cast<int>(std::ceil(std::max({v0.x, v1.x, v2.x}))));
-                            const int y0 = std::max(0, static_cast<int>(std::floor(std::min({v0.y, v1.y, v2.y}))));
-                            const int y1 = std::min(bh_ - 1, static_cast<int>(std::ceil(std::max({v0.y, v1.y, v2.y}))));
-                            if (x1 < x0 || y1 < y0) continue;
+                    if (k > 0 && pc.visible && prevC.visible) {
+                        const float ax = prevC.x, ay = prevC.y;
+                        const float dx = pc.x - ax, dy = pc.y - ay;
+                        const float len2 = dx * dx + dy * dy;
+                        const float maxHw = std::max(prevHalfWidth, halfWidth) + ssScale;
+                        const int x0 = std::max(0, static_cast<int>(std::floor(std::min(ax, pc.x) - maxHw)));
+                        const int x1 = std::min(bw_ - 1, static_cast<int>(std::ceil(std::max(ax, pc.x) + maxHw)));
+                        const int y0 = std::max(0, static_cast<int>(std::floor(std::min(ay, pc.y) - maxHw)));
+                        const int y1 = std::min(bh_ - 1, static_cast<int>(std::ceil(std::max(ay, pc.y) + maxHw)));
+                        if (len2 > 1e-8f && x1 >= x0 && y1 >= y0) {
+                            const float invLen2 = 1.0f / len2;
+                            const float st0 = static_cast<float>(k - 1) / static_cast<float>(n - 1);
+                            const float st1 = static_cast<float>(k) / static_cast<float>(n - 1);
+                            const Vec3 c1 = vcolor[static_cast<size_t>(k)];
                             for (int y = y0; y <= y1; ++y) {
                                 for (int x = x0; x <= x1; ++x) {
                                     const float px = x + 0.5f, py = y + 0.5f;
-                                    const float b0 = ((v1.x - px) * (v2.y - py) - (v2.x - px) * (v1.y - py)) * invArea;
-                                    const float b1 = ((v2.x - px) * (v0.y - py) - (v0.x - px) * (v2.y - py)) * invArea;
-                                    const float b2 = 1.0f - b0 - b1;
-                                    if (b0 < -0.002f || b1 < -0.002f || b2 < -0.002f) continue;
-                                    const float z = v0.z * b0 + v1.z * b1 + v2.z * b2;
-                                    const size_t pix = static_cast<size_t>(y) * bw_ + x;
-                                    if (z > opaqueDepth_[pix]) continue;  // hidden by skin
-                                    Sample& sm = buffer_[pix];
-                                    const Vec3 c = v0.color * b0 + v1.color * b1 + v2.color * b2;
-                                    const float a = options.hairAlpha;
+                                    float tt = ((px - ax) * dx + (py - ay) * dy) * invLen2;
+                                    tt = clampf(tt, 0.0f, 1.0f);
+                                    const float qx = ax + dx * tt, qy = ay + dy * tt;
+                                    const float dist = std::sqrt((px - qx) * (px - qx) +
+                                                                 (py - qy) * (py - qy));
+                                    const float hw = prevHalfWidth + (halfWidth - prevHalfWidth) * tt;
+                                    float cov = 1.0f - smoothstepf(hw * 0.40f, hw, dist);
+                                    if (cov <= 0.004f) continue;
+                                    // Root and tip taper: fibres are thinner at both ends.
+                                    const float st = st0 + (st1 - st0) * tt;
+                                    cov *= smoothstepf(0.0f, 0.05f, st) *
+                                           (1.0f - 0.85f * smoothstepf(0.70f, 1.0f, st));
+                                    if (cov <= 0.004f) continue;
+                                    const size_t pixIndex = static_cast<size_t>(y) * bw_ + x;
+                                    const float z = prevC.z + (pc.z - prevC.z) * tt;
+                                    if (z > opaqueDepth_[pixIndex]) continue;   // behind skin
+                                    const Vec3 c = prevColor + (c1 - prevColor) * tt;
+                                    const float a = options.hairAlpha * cov;
+                                    Sample& sm = buffer_[pixIndex];
                                     sm.color = sm.color * (1.0f - a) + c * a;
                                 }
                             }
                         }
                     }
-                    prevA = pra;
-                    prevB = prb;
-                    prevPA = pa;
-                    prevPB = pb;
-                    prevCA = prevCB = vcolor[static_cast<size_t>(k)];
-                    tangent = t;
+                    prevC = pc;
+                    prevColor = vcolor[static_cast<size_t>(k)];
+                    prevHalfWidth = halfWidth;
                 }
             }
             rasterMs += std::chrono::duration<double, std::milli>(clock::now() - tR).count();

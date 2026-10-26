@@ -85,6 +85,8 @@ struct FaceMasks {
     float noseSide = 0.0f;    // the side walls and the alar creases beside them
     float blush = 0.0f;       // cheeks, nose tip, ears
     float ao = 0.0f;          // sockets, nasolabial folds, under the chin, lip seam
+    float scalp = 0.0f;       // 1 above the hairline: hair, not skin, is what shows
+                              // through if a lock separates and the scalp peeks out
 };
 // |localPos| is in the head's own space (world position minus HeadModel::center()).
 FaceMasks headFaceMasks(const Vec3& localPos);

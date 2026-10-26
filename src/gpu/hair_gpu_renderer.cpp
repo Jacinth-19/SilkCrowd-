@@ -1513,17 +1513,17 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         if (models_.size() > 1) {
             for (const auto& model : models_) {
                 if (!model.instance) continue;
-                drawMeshXf(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), -1.0f,
+                drawMeshXf(headMesh_, headMeshIndex_.buffer, Vec3(0.655f, 0.45f, 0.37f), -1.0f,
                            model.instance->transform);
                 drawMeshXf(eyesMesh_, eyesMeshIndex_.buffer, Vec3(0.16f, 0.11f, 0.07f), -2.0f,
                            model.instance->transform);
-                drawMeshXf(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f,
+                drawMeshXf(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.635f, 0.435f, 0.36f), 0.0f,
                            model.instance->transform);
             }
         } else {
-            drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.66f, 0.47f, 0.39f), -1.0f);
+            drawMesh(headMesh_, headMeshIndex_.buffer, Vec3(0.655f, 0.45f, 0.37f), -1.0f);
             drawMesh(eyesMesh_, eyesMeshIndex_.buffer, Vec3(0.16f, 0.11f, 0.07f), -2.0f);
-            drawMesh(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.56f, 0.41f, 0.34f), 0.0f);
+            drawMesh(bodyMesh_, bodyMeshIndex_.buffer, Vec3(0.635f, 0.435f, 0.36f), 0.0f);
         }
         // Figure 9: the teapot under each hair layer.
         if (teapotMesh_.indexCount > 0) {

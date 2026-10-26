@@ -293,8 +293,8 @@ StylingParams StylingParams::fromPreset(int preset, uint32_t seed) {
     const float r3 = hashToFloat(pcgHash(seed * 7u + 4u));
     switch (preset % 10) {
         case 0:  // long straight
-            p.clumping = 0.25f; p.curl = 0.05f; p.frizz = 0.04f; p.straightness = 0.55f;
-            p.curlFrequency = 1.0f; p.color = {0.16f, 0.09f, 0.05f}; break;
+            p.clumping = 0.46f; p.curl = 0.05f; p.frizz = 0.06f; p.straightness = 0.55f;
+            p.curlFrequency = 1.0f; p.color = {0.115f, 0.062f, 0.033f}; break;
         case 1:  // wavy
             p.clumping = 0.45f; p.curl = 0.30f; p.frizz = 0.08f; p.straightness = 0.10f;
             p.curlFrequency = 2.2f; p.color = {0.28f, 0.16f, 0.08f}; break;
@@ -305,8 +305,8 @@ StylingParams StylingParams::fromPreset(int preset, uint32_t seed) {
             p.clumping = 0.75f; p.curl = 0.85f; p.frizz = 0.35f; p.volume = 0.35f;
             p.curlFrequency = 7.0f; p.clumpScale = 10.0f; p.color = {0.10f, 0.06f, 0.04f}; break;
         case 4:  // bob
-            p.clumping = 0.55f; p.curl = 0.18f; p.frizz = 0.06f; p.lengthJitter = 0.05f;
-            p.curlFrequency = 1.6f; p.color = {0.34f, 0.20f, 0.10f}; break;
+            p.clumping = 0.52f; p.curl = 0.18f; p.frizz = 0.06f; p.lengthJitter = 0.07f;
+            p.curlFrequency = 1.6f; p.color = {0.215f, 0.115f, 0.055f}; break;
         case 5:  // ponytail (strong clumping)
             p.clumping = 0.88f; p.clumpScale = 3.0f; p.clumpTipTightness = 3.0f;
             p.curl = 0.12f; p.frizz = 0.07f; p.color = {0.20f, 0.11f, 0.06f}; break;

@@ -169,6 +169,27 @@ Vulkan path draws the eyes too. `shadeEye` builds the palpebral fissure analytic
 `|h|/0.575`, `|v - 0.10 h side|/0.255`, exponent 1.7), the iris/limbal ring/pupil on an 11.8 mm
 globe, a lash fan with per-lash length jitter on both lids, a crease and two catchlights.
 
+### Hair mesh construction (the geometry the paper assumes, but does not specify)
+
+The paper takes a hair mesh as given ("manually prepared"); `buildHairMesh()` in
+`src/core/assets.cpp` has to author one, and the choices there decide whether the result reads as
+hair or as a wig. It follows the surface rather than extruding:
+
+* layer `l` is `surfacePoint(theta + drift, phi_l)` where `phi_l` interpolates from the root's polar
+  angle towards a per-row **hem**, so the hair wraps the skull exactly as the root layer does;
+* the hem is a distance along the surface (metres), not an angle, so crown strands are long and
+  hairline strands are short - the fringe stops at the brow as a consequence of the cut, and a bob
+  and a 35 cm style share one parameterisation;
+* past the jaw line (`phi > 2.30`, ~23 cm of arc from the crown) the hair leaves the scalp and
+  hangs down, with the hang direction turning from vertical at the nape to sideways-and-back at the
+  face so no lock is drawn over the eyes;
+* a constant stand-off plus a crown term keeps the coarse 4-gons of the hair mesh outside the skull
+  (the chord error grows quadratically with slice spacing and is worst at the pole), and the hero
+  styles use 6 slices rather than 4;
+* the parting drives a hem seam and the lateral drift; because the hemisphere above the hairline is
+  tagged by `FaceMasks::scalp` in *both* renderers, a seam that opens shows dark scalp rather than
+  a bald patch of skin.
+
 ## 9. Anti-aliasing
 
 `8x MSAA` is hardware MSAA on the Vulkan path: `HairGpuRenderer::setSampleCount()` clamps the
