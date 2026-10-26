@@ -28,3 +28,4 @@ renders/*.png
 .DS_Store
 build/
 renders/*.png
+__pycache__/
