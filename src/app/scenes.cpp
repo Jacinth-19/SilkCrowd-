@@ -1,6 +1,8 @@
 #include "scenes.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "silkcrowd/assets.h"
@@ -8,6 +10,26 @@
 namespace silk {
 namespace {
 constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
+
+// Loads the model and hands its meshes (and, for a scan, its skin texture) to the scene.
+// Every entry point goes through this, so the CLI, the Vulkan window and the Qt editor
+// always render the same head.
+void attachHead(HeadModel* head, Scene* scene, bool lowRes) {
+    const std::string scan = headScanAsset();
+    if (!scan.empty()) {
+        std::string error;
+        if (!head->loadScan(scan, &error) && std::getenv("SILKCROWD_VERBOSE"))
+            std::fprintf(stderr, "silkcrowd: scanned head not loaded (%s), using the "
+                                 "procedural head\n", error.c_str());
+    }
+    scene->head = lowRes ? head->headMeshLow() : head->headMesh();
+    scene->body = head->bodyMesh();
+    scene->eyes = head->eyesMesh();
+    if (head->isScan()) {
+        scene->skinAlbedo = head->skinAlbedo();
+        scene->useSkinTexture = !scene->skinAlbedo.pixels.empty();
+    }
+}
 }  // namespace
 
 Scene buildHeadScene(int styleIndex, uint32_t strandCount, uint32_t seed) {
@@ -16,9 +38,7 @@ Scene buildHeadScene(int styleIndex, uint32_t strandCount, uint32_t seed) {
     // Portrait lighting: the key comes from camera left and above, so the face has a lit
     // and a shadow side instead of the flat frontal wash that shows every modelling flaw.
     scene.sunDirection = normalize(Vec3(-0.42f, 0.66f, 0.62f));
-    scene.head = head.headMesh();
-    scene.body = head.bodyMesh();
-    scene.eyes = head.eyesMesh();
+    attachHead(&head, &scene, false);
 
     HairStyleSpec spec = HairStyleSpec::fromFigure10(styleIndex, seed);
     spec.totalStrands = strandCount;
@@ -50,9 +70,7 @@ Scene buildCrowdScene(int count) {
     HeadModel head;
     // One shared head/body mesh, drawn once per crowd instance (see the renderers), so that
     // every character in Figure 1's crowd has a face under its own hairstyle.
-    scene.head = head.headMeshLow();
-    scene.body = head.bodyMesh();
-    scene.eyes = head.eyesMesh();
+    attachHead(&head, &scene, true);
 
     const int cols = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count))));
     const float spacing = 0.56f;

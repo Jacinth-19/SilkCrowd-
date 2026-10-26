@@ -62,6 +62,7 @@ struct Args {
     bool compute = false;   // force the compute fallback on a mesh-shader device
     int msaa = 1;
     bool taa = true;
+    std::string headScan;    // "" = default asset, "none" = procedural
 };
 
 void printHelp() {
@@ -90,6 +91,8 @@ void printHelp() {
         "  --exposure F                tone mapping exposure\n"
         "  --report <file>             write the validation report to a file\n"
         "  --no-hair / --no-head       hide the hair / the head (diagnostics)\n"
+        "  --head-scan <file.glb>      use a different scanned head (default: shipped bust)\n"
+        "  --procedural-head           ignore the scan and use the parametric head\n"
         "  --simulate                  run the XPBD hair mesh simulation before rendering\n"
         "  --no-sag-free               skip the sag-free rest-shape initialization\n"
         "  --gpu / --vulkan            use the Vulkan renderer (default when available)\n"
@@ -142,6 +145,8 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--no-taa") a.taa = false;
         else if (s == "--no-hair") a.drawHair = false;
         else if (s == "--no-head") a.drawHead = false;
+        else if (s == "--head-scan") a.headScan = next("--head-scan");
+        else if (s == "--procedural-head") a.headScan = "none";
         else if (s == "--help" || s == "-h") { printHelp(); std::exit(0); }
         else {
             std::fprintf(stderr, "error: unknown option '%s'\n", s.c_str());
@@ -784,6 +789,8 @@ void runScreenshot(const Args& a) {
 
 int main(int argc, char** argv) {
     const Args args = parseArgs(argc, argv);
+    if (args.headScan == "none") setHeadScanAsset("");
+    else if (!args.headScan.empty()) setHeadScanAsset(args.headScan);
     if (args.mode == "help") { printHelp(); return 0; }
     if (args.mode == "validate") {
         const std::string report = runValidation();

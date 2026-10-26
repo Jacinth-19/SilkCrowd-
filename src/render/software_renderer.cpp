@@ -190,6 +190,70 @@ inline Vec3 shadeSkin(Vec3 localPos, Vec3 nrm, Vec3 viewDir, const Scene& scene,
     return color;
 }
 
+// Bilinear texture fetch with wrap-around. The scan's UV layout is a single chart, so a
+// clamp would smear the edge texels of the neck across the whole bust; wrapping cannot be
+// seen, because the chart never samples across its own border.
+inline Vec3 texelFetch(const Image& image, Vec2 uv) {
+    if (image.width <= 0 || image.height <= 0 || image.pixels.empty()) return Vec3(0.5f);
+    float u = uv.x - std::floor(uv.x);
+    float v = uv.y - std::floor(uv.y);
+    const float fx = u * static_cast<float>(image.width) - 0.5f;
+    const float fy = v * static_cast<float>(image.height) - 0.5f;
+    const int x0 = static_cast<int>(std::floor(fx));
+    const int y0 = static_cast<int>(std::floor(fy));
+    const float tx = fx - std::floor(fx);
+    const float ty = fy - std::floor(fy);
+    const int x1 = (x0 + 1) % image.width;
+    const int y1 = (y0 + 1) % image.height;
+    const int xa = ((x0 % image.width) + image.width) % image.width;
+    const int ya = ((y0 % image.height) + image.height) % image.height;
+    const Vec3 a = lerp(image.at(xa, ya), image.at(x1, ya), tx);
+    const Vec3 b = lerp(image.at(xa, y1), image.at(x1, y1), tx);
+    return lerp(a, b, ty);
+}
+
+// Scanned skin: the albedo of every pixel comes from the scan's own 1K texture (pores,
+// lips, lashes, brows, the fine red of the ears) instead of from painted masks, so the
+// only things left for the shader are the studio rig, the specular and the scalp.
+inline Vec3 shadeScannedSkin(Vec3 nrm, Vec3 viewDir, const Scene& scene, Vec3 albedo,
+                             float specGain, float scalp) {
+    const Vec3 V = normalize(viewDir);
+    const Vec3 L = scene.sunDirection;
+    // The scan's albedo is photographic: it already carries the mottling, the subsurface
+    // red and the pores the procedural path has to fake. What it does not carry is this
+    // scene's light, so it is only lifted a little to compensate for the flat daylight it
+    // was captured under.
+    albedo = albedo * 1.35f;
+    albedo = lerp(albedo, Vec3(0.020f, 0.013f, 0.010f), saturate(scalp));
+
+    const Vec3 keyDir = normalize(L + Vec3(0.0f, 0.15f, 0.0f));
+    const Vec3 fillDir = normalize(Vec3(-keyDir.x * 0.9f, 0.25f, -keyDir.z * 0.35f + 0.55f));
+    const Vec3 rimDir = normalize(Vec3(-keyDir.x * 0.6f, 0.45f, -keyDir.z));
+
+    const float ndl = dot(nrm, keyDir);
+    const float wrapDiff = saturate((ndl + 0.42f) / 1.42f);
+    const float terminator = std::exp(-ndl * ndl * 6.0f);
+    Vec3 color = albedo * scene.sunColor * (wrapDiff * scene.sunIntensity * 0.55f);
+    color += Vec3(0.34f, 0.09f, 0.06f) * (terminator * 0.16f) * scene.sunColor;
+
+    const float fill = saturate(dot(nrm, fillDir));
+    color += albedo * scene.skyHorizon * (fill * 0.30f + 0.05f);
+    const Vec3 amb = lerp(scene.skyHorizon * 0.32f, scene.skyZenith * 0.70f,
+                          saturate(nrm.y * 0.5f + 0.5f));
+    color += albedo * amb * 0.55f;
+
+    const Vec3 H = normalize(keyDir + V);
+    const float nh = saturate(dot(nrm, H));
+    const float f0 = 0.028f;
+    const float fres = f0 + (1.0f - f0) * std::pow(1.0f - saturate(dot(nrm, V)), 5.0f);
+    color += Vec3(std::pow(nh, 42.0f) * 0.42f + std::pow(nh, 9.0f) * 0.045f) *
+             scene.sunColor * (specGain * fres);
+    const float rim = std::pow(1.0f - saturate(dot(nrm, V)), 3.5f) *
+                      saturate(dot(nrm, rimDir));
+    color += scene.skyZenith * (rim * 0.55f);
+    return color;
+}
+
 // The eyeball. Everything is measured in the eye's own frame: the globe is an 11.8 mm
 // sphere, the iris is 12 mm across and the opening is the almond of a real palpebral
 // fissure (30 x 10 mm). Rendering the opening analytically - rather than hoping the socket
@@ -425,13 +489,19 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
     };
 
     // ---------------- opaque geometry ----------------
+    const bool texturedSkin = scene.useSkinTexture && !scene.skinAlbedo.pixels.empty();
     auto drawMesh = [&](const Mesh& mesh, Vec3 baseAlbedo, float specPower, float specGain,
                         bool isSkin, bool isEye = false, const Mat4* xform = nullptr,
                         bool faceMasks = false) {
         const Mat4 invXform = xform ? xform->inverseAffine() : Mat4::identity();
         const Vec3 headCenter(0.0f, 0.02f, 0.0f);   // HeadModel::center()
+        const bool hasUv = mesh.uvs.size() == mesh.positions.size();
+        const bool hasScalp = mesh.scalpMask.size() == mesh.positions.size();
+        const bool useTexture = texturedSkin && hasUv && isSkin;
         for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
             Vec3 p[3], n[3];
+            Vec2 uv[3];
+            float scalp[3] = {0.0f, 0.0f, 0.0f};
             Projected pr[3];
             for (int k = 0; k < 3; ++k) {
                 const uint32_t idx = mesh.indices[t + k];
@@ -439,6 +509,8 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                 const Vec3 ln = mesh.normals.empty() ? Vec3(0, 1, 0) : mesh.normals[idx];
                 p[k] = xform ? xform->transformPoint(lp) : lp;
                 n[k] = xform ? normalize(xform->transformDirection(ln)) : ln;
+                if (hasUv) uv[k] = mesh.uvs[idx];
+                if (hasScalp) scalp[k] = mesh.scalpMask[idx];
                 project(p[k], &pr[k]);
             }
             if (!pr[0].visible && !pr[1].visible && !pr[2].visible) continue;
@@ -470,6 +542,17 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                     Vec3 alb = baseAlbedo;
                     const float ndl = saturate(dot(nrm, scene.sunDirection));
                     float wrap = ndl;
+                    if (useTexture) {
+                        // A scanned head: the face is the scan's own photograph, so the
+                        // shader only has to light it. The scalp under the hair still goes
+                        // dark, or a bald scan would show a bald head at the parting.
+                        const Vec2 uvHere = uv[0] * b0 + uv[1] * b1 + uv[2] * b2;
+                        const float scalpHere = scalp[0] * b0 + scalp[1] * b1 + scalp[2] * b2;
+                        s.color = shadeScannedSkin(nrm, V, scene, texelFetch(scene.skinAlbedo, uvHere),
+                                                   specGain, scalpHere);
+                        s.depth = z;
+                        continue;
+                    }
                     if (isSkin) {
                         // The face masks are authored in the head's own space, so undo the
                         // instance transform before evaluating them. The neck/shoulders are

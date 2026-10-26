@@ -93,6 +93,11 @@ struct Scene {
     Mesh body;
     Mesh eyes;
     Mesh teapot;
+    // Skin albedo of a scanned head (linear light, sRGB-decoded at load). When this is
+    // non-empty the head is shaded from the scan's real texture -- pores, lips, lashes,
+    // brows -- instead of the procedural face masks.
+    Image skinAlbedo;
+    bool useSkinTexture = false;
     Vec3 sunDirection = normalize(Vec3(0.35f, 0.75f, 0.45f));
     Vec3 sunColor{1.0f, 0.93f, 0.82f};
     float sunIntensity = 2.2f;

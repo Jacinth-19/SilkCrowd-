@@ -3,7 +3,8 @@
 # this Makefile exists so that everything paper-critical can be built and tested with
 # nothing but a C++17 compiler.
 CXX      ?= g++
-CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -Iinclude -MMD -MP
+CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -Iinclude \
+            -Ithird_party/stb -DSILKCROWD_SOURCE_DIR='"$(CURDIR)"' -MMD -MP
 LDFLAGS  ?=
 BUILD    := build
 

@@ -3,7 +3,57 @@
 #include <algorithm>
 #include <cmath>
 
+#include "silkcrowd/gltf.h"
+
+#include <cstdlib>
+#include <fstream>
+
 namespace silk {
+namespace {
+
+std::string g_headScanAsset;   // "" until resolved
+
+}  // namespace
+
+std::string assetPath(const std::string& relative) {
+    static std::string root;
+    static const bool resolved = [] {
+        if (const char* env = std::getenv("SILKCROWD_ASSET_DIR")) {
+            root = env;
+            if (!root.empty() && root.back() != '/') root.push_back('/');
+            return true;
+        }
+        const char* candidates[] = {"assets/", "../assets/", "../../assets/",
+#ifdef SILKCROWD_SOURCE_DIR
+                                    SILKCROWD_SOURCE_DIR "/assets/"
+#else
+                                    ""
+#endif
+        };
+        for (const char* candidate : candidates) {
+            if (!candidate || !*candidate) continue;
+            std::ifstream probe(std::string(candidate) + "heads/head_scan.glb", std::ios::binary);
+            std::ifstream probe2(std::string(candidate) + "hairmeshes/04_bob.skhm",
+                                 std::ios::binary);
+            if (probe.good() || probe2.good()) {
+                root = candidate;
+                return true;
+            }
+        }
+        root = "assets/";
+        return true;
+    }();
+    (void)resolved;
+    return root + relative;
+}
+
+std::string headScanAsset() {
+    if (g_headScanAsset.empty()) g_headScanAsset = assetPath("heads/head_scan.glb");
+    return g_headScanAsset;
+}
+
+void setHeadScanAsset(const std::string& path) { g_headScanAsset = path; }
+
 namespace {
 
 inline Vec3 gaussBump(Vec3 dir, Vec3 axis, float sharpness) {
@@ -103,6 +153,20 @@ inline float crease(float theta, float phi, float th0, float ph0, float thSigma,
 // landmark of a ~22 cm female head (glabella, nasion, subnasale, stomion, menton, ...),
 // and the whole surface stays inside the silhouette the hair meshes were authored against.
 Vec3 HeadModel::surfacePoint(float theta, float phi) const {
+    if (scan_) {
+        const float r = scanRadius(theta, phi);
+        if (r > 0.0f) {
+            const float sp = std::sin(phi), cp = std::cos(phi);
+            return center_ + Vec3(sp * std::sin(theta), cp, sp * std::cos(theta)) * r;
+        }
+        // Below the jaw the scan's bust has a neck: rays that miss it (in front of the
+        // throat, under the chin) fall back to the procedural surface, which is only ever
+        // sampled by hanging hair and by the hairline extension.
+    }
+    return surfacePointProcedural(theta, phi);
+}
+
+Vec3 HeadModel::surfacePointProcedural(float theta, float phi) const {
     const float sp = std::sin(phi), cp = std::cos(phi);
     const float dx = sp * std::sin(theta);   // +x = her right
     const float dy = cp;                     // +y = up
@@ -229,11 +293,204 @@ Vec3 HeadModel::surfaceNormal(float theta, float phi) const {
     return n;
 }
 
+namespace {
+
+// The hairline as a function of azimuth, in the shared parameterization: 63 deg from the
+// crown over the forehead, sweeping back to 116 deg at the nape, low over the temples.
+inline float hairlineAngle(float theta) {
+    const float front = clampf(std::cos(theta), -1.0f, 1.0f);
+    return 1.10f + 0.92f * (0.5f - 0.5f * front);
+}
+
+}  // namespace
+
+//==============================================================================
+//  Scanned head
+//==============================================================================
+bool HeadModel::loadScan(const std::string& glbPath, std::string* error) {
+    GltfAsset asset;
+    if (!loadGlb(glbPath, &asset, error)) return false;
+    if (asset.mesh.uvs.size() != asset.mesh.positions.size()) {
+        if (error) *error = "scan has no TEXCOORD_0";
+        return false;
+    }
+
+    // ---- the head's frame ----------------------------------------------------
+    // tools/prep_head.py has already put the bust in SilkCrowd's head space: midline at
+    // x = 0, crown at y = 0.128, skull centroid at z = 0. center_ is the point the scalp
+    // parameterization radiates from: one third of the way down the skull from the crown,
+    // on the ear axis, which is where a real cranium is star-shaped in every direction the
+    // hair mesh samples.
+    Mesh mesh = asset.mesh;
+    float crown = -1e30f;
+    for (const Vec3& p : mesh.positions) crown = std::max(crown, p.y);
+    center_ = Vec3(0.0f, crown - 0.058f, 0.0f);
+    radius_ = 0.11f;
+    float maxR = 0.0f;
+    for (const Vec3& p : mesh.positions) maxR = std::max(maxR, length(p - center_));
+    if (maxR > 0.0f) radius_ = maxR;
+
+    head_ = std::move(mesh);
+    head_.name = "head_scan";
+    head_.materialIds.assign(head_.triangleCount(), 0);
+    headLow_ = head_;      // 17.7k triangles is already crowd-cheap: the hair costs 40x more
+    body_.positions.clear();
+    body_.normals.clear();
+    body_.uvs.clear();
+    body_.indices.clear();
+    body_.materialIds.clear();
+    body_.name = "body_scan";
+    eyes_.positions.clear();   // the scan's lids are closed
+    eyes_.normals.clear();
+    eyes_.uvs.clear();
+    eyes_.indices.clear();
+    eyes_.materialIds.clear();
+    eyes_.name = "eyes_scan";
+
+    skinAlbedo_ = std::move(asset.albedo);
+
+    // ---- depth map -----------------------------------------------------------
+    // Rasterize the bust into (theta, phi) around center_ storing the radial distance.
+    // This is the exact surface: hair roots are placed with it, so they cannot float off
+    // the skull or sink into it the way a fitted ellipsoid would at the temples.
+    scan_ = true;
+    buildScanDepthMap();
+
+    // Per-vertex scalp factor for the shaded skin (see Mesh::scalpMask).
+    head_.scalpMask.resize(head_.positions.size());
+    for (size_t i = 0; i < head_.positions.size(); ++i)
+        head_.scalpMask[i] = scalpMask(head_.positions[i]);
+    return true;
+}
+
+void HeadModel::buildScanDepthMap() {
+    const int U = 256, V = 192;          // 1.4 deg x 0.94 deg per cell
+    const float kMaxPhi = 3.05f;
+    depthU_ = U;
+    depthV_ = V;
+    depth_.assign(static_cast<size_t>(U) * V, 0.0f);
+
+    auto put = [&](int x, int y, float r) {
+        if (y < 0 || y >= V) return;
+        x = ((x % U) + U) % U;
+        float& slot = depth_[static_cast<size_t>(y) * U + x];
+        slot = std::max(slot, r);      // outermost surface wins (an ear over the skull)
+    };
+
+    const std::vector<Vec3>& P = head_.positions;
+    for (size_t t = 0; t + 2 < head_.indices.size(); t += 3) {
+        float th[3], ph[3], rad[3];
+        bool ok = true;
+        for (int k = 0; k < 3; ++k) {
+            const Vec3 d = P[head_.indices[t + k]] - center_;
+            const float r = length(d);
+            if (r < 1e-5f) {
+                ok = false;
+                break;
+            }
+            rad[k] = r;
+            ph[k] = std::acos(clampf(d.y / r, -1.0f, 1.0f));
+            th[k] = std::atan2(d.x, d.z);
+        }
+        if (!ok) continue;
+        // Unwrap the azimuth so that a triangle crossing the +-pi seam is rasterized as
+        // one contiguous piece instead of two slivers on opposite sides of the map.
+        for (int k = 1; k < 3; ++k) {
+            while (th[k] - th[0] > kPi) th[k] -= 2.0f * kPi;
+            while (th[k] - th[0] < -kPi) th[k] += 2.0f * kPi;
+        }
+        if (std::max({ph[0], ph[1], ph[2]}) > kMaxPhi) continue;
+
+        const float u[3] = {(th[0] + kPi) / (2.0f * kPi) * U,
+                            (th[1] + kPi) / (2.0f * kPi) * U,
+                            (th[2] + kPi) / (2.0f * kPi) * U};
+        const float v[3] = {ph[0] / kMaxPhi * V, ph[1] / kMaxPhi * V, ph[2] / kMaxPhi * V};
+        const float area = (u[1] - u[0]) * (v[2] - v[0]) - (u[2] - u[0]) * (v[1] - v[0]);
+        if (std::fabs(area) < 1e-6f) continue;
+        const int x0 = static_cast<int>(std::floor(std::min({u[0], u[1], u[2]})));
+        const int x1 = static_cast<int>(std::ceil(std::max({u[0], u[1], u[2]})));
+        const int y0 = static_cast<int>(std::floor(std::min({v[0], v[1], v[2]})));
+        const int y1 = static_cast<int>(std::ceil(std::max({v[0], v[1], v[2]})));
+        const float inv = 1.0f / area;
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                const float px = static_cast<float>(x) + 0.5f;
+                const float py = static_cast<float>(y) + 0.5f;
+                const float b0 = ((u[1] - px) * (v[2] - py) - (u[2] - px) * (v[1] - py)) * inv;
+                const float b1 = ((u[2] - px) * (v[0] - py) - (u[0] - px) * (v[2] - py)) * inv;
+                const float b2 = 1.0f - b0 - b1;
+                if (b0 < -0.02f || b1 < -0.02f || b2 < -0.02f) continue;
+                put(x, y, b0 * rad[0] + b1 * rad[1] + b2 * rad[2]);
+            }
+        }
+    }
+
+    // Cells a triangle does not cover (the raster is coarser than the scan's triangles are
+    // small) are filled from their neighbours, so the bilinear lookup never crosses a gap.
+    for (int pass = 0; pass < 3; ++pass) {
+        std::vector<float> next = depth_;
+        for (int y = 0; y < V; ++y) {
+            for (int x = 0; x < U; ++x) {
+                const size_t i = static_cast<size_t>(y) * U + x;
+                if (depth_[i] > 0.0f) continue;
+                float sum = 0.0f;
+                int n = 0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int yy = y + dy;
+                        if (yy < 0 || yy >= V) continue;
+                        const int xx = ((x + dx) % U + U) % U;
+                        const float value = depth_[static_cast<size_t>(yy) * U + xx];
+                        if (value > 0.0f) {
+                            sum += value;
+                            ++n;
+                        }
+                    }
+                }
+                if (n > 0) next[i] = sum / static_cast<float>(n);
+            }
+        }
+        depth_.swap(next);
+    }
+}
+
+float HeadModel::scanRadius(float theta, float phi) const {
+    if (depthU_ == 0 || depth_.empty() || phi < 0.0f || phi > 3.0f) return 0.0f;
+    float t = theta + kPi;
+    t -= 2.0f * kPi * std::floor(t / (2.0f * kPi));
+    const float fx = t / (2.0f * kPi) * static_cast<float>(depthU_) - 0.5f;
+    const float fy = phi / 3.05f * static_cast<float>(depthV_) - 0.5f;
+    const float fxi = std::floor(fx), fyi = std::floor(fy);
+    const int x0raw = static_cast<int>(fxi);
+    const int y0 = static_cast<int>(clampf(fyi, 0.0f, static_cast<float>(depthV_ - 1)));
+    const float tx = fx - fxi;
+    const float ty = saturate(fy - fyi);
+    const int y1 = std::min(depthV_ - 1, y0 + 1);
+    const int x0 = ((x0raw % depthU_) + depthU_) % depthU_;
+    const int x1 = (x0 + 1) % depthU_;
+    const auto get = [&](int x, int y) { return depth_[static_cast<size_t>(y) * depthU_ + x]; };
+    const float a = get(x0, y0) * (1.0f - tx) + get(x1, y0) * tx;
+    const float b = get(x0, y1) * (1.0f - tx) + get(x1, y1) * tx;
+    return a * (1.0f - ty) + b * ty;
+}
+
+float HeadModel::scalpMask(const Vec3& localPos) const {
+    if (!scan_) return 0.0f;
+    const Vec3 d = localPos - center_;
+    const float r = length(d);
+    if (r < 1e-6f) return 1.0f;
+    const float phi = std::acos(clampf(d.y / r, -1.0f, 1.0f));
+    const float theta = std::atan2(d.x, d.z);
+    // 1 above the hairline (phi smaller = closer to the crown), feathered over the degrees
+    // just below it: a hairline is a soft boundary, and the scalp has to be dark a few
+    // millimetres past the last rooted hair.
+    return 1.0f - smoothstepf(hairlineAngle(theta) - 0.07f, hairlineAngle(theta) + 0.035f, phi);
+}
+
 float HeadModel::hairlinePhi(float theta) const {
     // Theta = 0 is the face: the forehead hairline sits at ~63 deg from the crown, and
     // the nape hairline reaches ~2.0 rad. Interpolate smoothly around the head.
-    const float front = clampf(std::cos(theta), -1.0f, 1.0f);
-    return 1.10f + 0.92f * (0.5f - 0.5f * front);
+    return hairlineAngle(theta);
 }
 
 HeadModel::ScalpPatch HeadModel::defaultPatch() const {

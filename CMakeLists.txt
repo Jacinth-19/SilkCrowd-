@@ -32,7 +32,9 @@ add_library(silkcrowd_core STATIC
   src/core/catmull_rom.cpp
   src/core/hair_mesh.cpp
   src/core/hair_mesh_texture.cpp
+  src/core/gltf.cpp
   src/core/image.cpp
+  src/core/image_decode.cpp
   src/core/lod.cpp
   src/core/root_placement.cpp
   src/core/sim.cpp
@@ -41,6 +43,10 @@ add_library(silkcrowd_core STATIC
   src/render/software_renderer.cpp
 )
 target_include_directories(silkcrowd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# stb_image (public domain) is vendored for the scanned head's texture.
+target_include_directories(silkcrowd_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+target_compile_definitions(silkcrowd_core PRIVATE
+  SILKCROWD_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(silkcrowd_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
 # Threads make the crowd passes scale with the core count.
 find_package(Threads QUIET)

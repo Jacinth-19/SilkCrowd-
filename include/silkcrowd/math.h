@@ -234,6 +234,16 @@ inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 inline float saturate(float v) { return clampf(v, 0.0f, 1.0f); }
 inline float mixf(float a, float b, float t) { return a + (b - a) * t; }
 inline float deg2rad(float d) { return d * (kPi / 180.0f); }
+// sRGB transfer functions: asset textures arrive sRGB-encoded and the renderer works in
+// linear light, so every texture fetch pair goes through these once.
+inline float srgbToLinear(float v) {
+    v = saturate(v);
+    return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+}
+inline float linearToSrgb(float v) {
+    v = saturate(v);
+    return v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+}
 inline float smoothstepf(float e0, float e1, float x) {
     const float t = saturate((x - e0) / (e1 - e0));
     return t * t * (3.0f - 2.0f * t);
