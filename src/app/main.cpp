@@ -63,6 +63,8 @@ struct Args {
     int msaa = 1;
     bool taa = true;
     std::string headScan;    // "" = default asset, "none" = procedural
+    float yaw = 0.0f;        // camera azimuth around the scene target, degrees
+    bool studio = false;     // dark studio backdrop instead of sky + ground grid
 };
 
 void printHelp() {
@@ -91,7 +93,12 @@ void printHelp() {
         "  --exposure F                tone mapping exposure\n"
         "  --report <file>             write the validation report to a file\n"
         "  --no-hair / --no-head       hide the hair / the head (diagnostics)\n"
-        "  --head-scan <file.glb>      use a different scanned head (default: shipped bust)\n"
+        "  --yaw DEG                   orbit the camera around the scene centre (0 = the\n"
+        "                              default three-quarter view; 90 = profile)\n"
+        "  --studio                    dark studio backdrop: no sky, no floor grid\n"
+        "  --head-scan <file.glb>      a different scanned head, or one of the shipped names:\n"
+        "                              male (photogrammetry scan, CC BY) or female (MakeHuman\n"
+        "                              bust, CC0). Default: shipped male bust\n"
         "  --procedural-head           ignore the scan and use the parametric head\n"
         "  --simulate                  run the XPBD hair mesh simulation before rendering\n"
         "  --no-sag-free               skip the sag-free rest-shape initialization\n"
@@ -145,6 +152,8 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--no-taa") a.taa = false;
         else if (s == "--no-hair") a.drawHair = false;
         else if (s == "--no-head") a.drawHead = false;
+        else if (s == "--yaw") a.yaw = std::stof(next("--yaw"));
+        else if (s == "--studio") a.studio = true;
         else if (s == "--head-scan") a.headScan = next("--head-scan");
         else if (s == "--procedural-head") a.headScan = "none";
         else if (s == "--help" || s == "-h") { printHelp(); std::exit(0); }
@@ -749,6 +758,14 @@ void runScreenshot(const Args& a) {
     Camera cam = (a.scene == "crowd") ? crowdCamera(a.width, a.height)
                  : (a.scene == "teapot") ? teapotCamera(a.width, a.height)
                                          : headCamera(a.width, a.height);
+    if (a.yaw != 0.0f) {
+        // Orbit around the target. The crowd and teapot scenes are laid out on a grid, so a
+        // yaw is a camera move there too -- nothing in the scene itself changes.
+        const float r = deg2rad(a.yaw);
+        const float cs = std::cos(r), sn = std::sin(r);
+        const Vec3 d = cam.position - cam.target;
+        cam.position = cam.target + Vec3(d.x * cs + d.z * sn, d.y, -d.x * sn + d.z * cs);
+    }
     if (a.simulate) {
         const SimStats st = simulateScene(&scene, std::max(1, a.frames), 1.0f / 60.0f, a);
         std::printf("%s\n", st.toString().c_str());
@@ -773,6 +790,13 @@ void runScreenshot(const Args& a) {
     opt.frameMode = a.finiteDifference ? FrameMode::FiniteDifferences : FrameMode::PerVertexTextures;
     opt.drawHair = a.drawHair;
     opt.drawHead = a.drawHead;
+    if (a.studio) {
+        // A dark backdrop is how the reference photographs of a hair model are shot: with
+        // nothing behind the silhouette, the hair's own edge is what the eye judges.
+        opt.drawSky = false;
+        opt.drawGround = false;
+        opt.drawShadows = false;
+    }
     SoftwareRenderer renderer;
     Image img;
     RenderStats stats;
@@ -790,6 +814,10 @@ void runScreenshot(const Args& a) {
 int main(int argc, char** argv) {
     const Args args = parseArgs(argc, argv);
     if (args.headScan == "none") setHeadScanAsset("");
+    // The shipped heads are named, not path-ed: "male" is the CC BY photogrammetry scan and
+    // "female" the CC0 MakeHuman bust (see assets/heads/LICENSE-female_head.txt).
+    else if (args.headScan == "male") setHeadScanAsset("assets/heads/head_scan.glb");
+    else if (args.headScan == "female") setHeadScanAsset("assets/heads/female_head_scan.glb");
     else if (!args.headScan.empty()) setHeadScanAsset(args.headScan);
     if (args.mode == "help") { printHelp(); return 0; }
     if (args.mode == "validate") {

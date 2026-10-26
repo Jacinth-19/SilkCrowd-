@@ -248,6 +248,7 @@ float HairShadow::visibility(Vec3 p, float penetration) const {
     const int cy = static_cast<int>(std::floor(fy));
     const int reach = penetration > 0.02f ? 2 : 1;
     float sum = 0.0f;
+    float darkest = 1.0f;
     int taps = 0;
     for (int dy = -reach; dy <= reach; ++dy) {
         for (int dx = -reach; dx <= reach; ++dx) {
@@ -265,11 +266,19 @@ float HairShadow::visibility(Vec3 p, float penetration) const {
             }
             // How far behind the envelope this sample is, measured along the light.
             const float delta = caster - dot(q, axisW);
-            sum += 1.0f - smoothstepf(0.0f, penetration, delta);
+            const float vis = 1.0f - smoothstepf(0.0f, penetration, delta);
+            sum += vis;
+            darkest = std::min(darkest, vis);
             ++taps;
         }
     }
-    return taps > 0 ? sum / static_cast<float>(taps) : 1.0f;
+    if (taps == 0) return 1.0f;
+    const float mean = sum / static_cast<float>(taps);
+    // The buffer stores the *outermost* caster per cell, so a cell with no hair in it reads
+    // as fully lit. Between two strands that is true, but at skin depth it paints bright
+    // stripes across a shadowed cheek -- which is exactly what it did before this blend.
+    // Weighting towards the darkest tap closes those leaks without hardening the penumbra.
+    return darkest + (mean - darkest) * 0.35f;
 }
 
 // Cheap value noise, used for skin mottling and hair-colour breakup. Deterministic, so a
@@ -396,43 +405,106 @@ inline Vec3 texelFetch(const Image& image, Vec2 uv) {
 // Scanned skin: the albedo of every pixel comes from the scan's own 1K texture (pores,
 // lips, lashes, brows, the fine red of the ears) instead of from painted masks, so the
 // only things left for the shader are the studio rig, the specular and the scalp.
+// Scanned skin.
+//
+// The scan brings its own photographic albedo -- pores, lips, brows, the red of the
+// capillaries -- so the shader must not paint a face on top of it. What it adds is what a
+// photograph cannot carry: the light. Skin is a layered dielectric, and three things in it
+// are visible at portrait distance and are what separate a lit face from a grey one:
+//
+//   1. subcutaneous scattering. Light that enters the skin is scattered a few millimetres
+//      and leaves warm, so the terminator of the face is red rather than grey, the nostrils
+//      and the ear rims glow when backlit, and the shadow side never goes neutral;
+//   2. a *roughness* split in the specular. Skin is not one gloss: the T-zone (forehead,
+//      nose bridge, chin) is oilier and carries a tight highlight, the cheeks and the jaw
+//      are drier and only take a broad sheen. The two lobes are weighted by a T-zone mask
+//      evaluated in head space;
+//   3. pores. At portrait distance a perfectly smooth highlight reads as plastic, so the
+//      specular normal is jittered at texel scale with a hash of the UV -- a perturbation,
+//      not a texture, so it survives the atlas being re-authored and costs two multiplies.
+//
+// Everything is energy-scaled against the scene's sun and sky, the same lights the hair uses.
+inline float hash01(Vec2 p) {
+    const float h = std::sin(p.x * 127.1f + p.y * 311.7f) * 43758.5453f;
+    return h - std::floor(h);
+}
+
 inline Vec3 shadeScannedSkin(Vec3 nrm, Vec3 viewDir, const Scene& scene, Vec3 albedo,
-                             float specGain, float scalp, float sunVisibility = 1.0f) {
+                             float specGain, float scalp, float sunVisibility, Vec2 uv,
+                             Vec3 local) {
     const Vec3 V = normalize(viewDir);
     const Vec3 L = scene.sunDirection;
     // The scan's albedo is photographic: it already carries the mottling, the subsurface
-    // red and the pores the procedural path has to fake. What it does not carry is this
-    // scene's light, so it is only lifted a little to compensate for the flat daylight it
-    // was captured under.
+    // red and the pores the procedural path has to fake. It is only lifted a little to
+    // compensate for the flat daylight it was captured under.
     albedo = albedo * 1.35f;
     albedo = lerp(albedo, Vec3(0.020f, 0.013f, 0.010f), saturate(scalp));
+    const float skin = 1.0f - saturate(scalp);
 
     const Vec3 keyDir = normalize(L + Vec3(0.0f, 0.15f, 0.0f));
     const Vec3 fillDir = normalize(Vec3(-keyDir.x * 0.9f, 0.25f, -keyDir.z * 0.35f + 0.55f));
     const Vec3 rimDir = normalize(Vec3(-keyDir.x * 0.6f, 0.45f, -keyDir.z));
 
+    // T-zone: forehead, nose bridge and chin carry more oil than the cheeks. `local` is in
+    // head space (crown at y = +0.128, face toward +z, midline at x = 0).
+    const float forehead = smoothstepf(0.020f, 0.060f, local.y) *
+                           smoothstepf(-0.010f, 0.030f, local.z);
+    const float noseBridge = smoothstepf(0.016f, 0.006f, std::fabs(local.x)) *
+                             smoothstepf(0.055f, 0.075f, local.z) *
+                             smoothstepf(-0.030f, -0.010f, local.y);
+    const float chin = smoothstepf(-0.045f, -0.065f, local.y) *
+                       smoothstepf(0.040f, 0.060f, local.z);
+    const float oily = saturate(forehead * 0.85f + noseBridge + chin * 0.7f) * skin;
+
+    // --- pores -------------------------------------------------------------------
+    // A hash of the atlas UV breaks the highlight up at pore scale. It scales the specular
+    // rather than tilting the normal: tilting was the first attempt and it banded -- the
+    // sine hash correlates along diagonals in UV, which on a cheek reads as a smear.
+    const float pore = hash01(uv * 812.0f);
+    const float poreWide = hash01(uv * 214.0f + Vec2(11.7f, 29.3f));
+    const float breakup = 0.80f + 0.26f * pore + 0.14f * poreWide;
+
+    // --- diffuse, with a warm terminator ------------------------------------------
     const float ndl = dot(nrm, keyDir);
     const float wrapDiff = saturate((ndl + 0.42f) / 1.42f);
-    const float terminator = std::exp(-ndl * ndl * 6.0f);
     Vec3 color = albedo * scene.sunColor * (wrapDiff * scene.sunIntensity * 0.55f) *
                  sunVisibility;
-    color += Vec3(0.34f, 0.09f, 0.06f) * (terminator * 0.16f) * scene.sunColor * sunVisibility;
+    // Subcutaneous scattering: strongest where the surface turns away from the key, and
+    // strongest on thin parts (ears, nostrils) through the backlight term.
+    const float terminator = std::exp(-ndl * ndl * 6.0f);
+    const float back = saturate(-ndl) * 0.5f + terminator * 0.5f;
+    color += albedo * Vec3(1.00f, 0.30f, 0.21f) * (back * 0.42f) * scene.sunColor *
+             (scene.sunIntensity * 0.18f) * skin * sunVisibility;
+    // Bounce off the shoulders and hair onto the jaw: warm, from below.
+    const float bounce = saturate(-nrm.y) * saturate(nrm.z * 0.5f + 0.5f);
+    color += albedo * Vec3(0.55f, 0.30f, 0.26f) * (bounce * 0.10f) * skin;
 
     const float fill = saturate(dot(nrm, fillDir));
     color += albedo * scene.skyHorizon * (fill * 0.30f + 0.05f);
     const Vec3 amb = lerp(scene.skyHorizon * 0.32f, scene.skyZenith * 0.70f,
                           saturate(nrm.y * 0.5f + 0.5f));
-    color += albedo * amb * 0.55f;
+    // Occlusion dims the sky light as well as the sun, or deep creases read as painted-on.
+    color += albedo * amb * (0.34f + 0.21f * sunVisibility);
 
+    // --- specular: two skin lobes, Fresnel, pores ----------------------------------
     const Vec3 H = normalize(keyDir + V);
     const float nh = saturate(dot(nrm, H));
+    const float ndv = saturate(dot(nrm, V));
     const float f0 = 0.028f;
-    const float fres = f0 + (1.0f - f0) * std::pow(1.0f - saturate(dot(nrm, V)), 5.0f);
-    color += Vec3(std::pow(nh, 42.0f) * 0.42f + std::pow(nh, 9.0f) * 0.045f) *
-             scene.sunColor * (specGain * fres);
-    const float rim = std::pow(1.0f - saturate(dot(nrm, V)), 3.5f) *
-                      saturate(dot(nrm, rimDir));
-    color += scene.skyZenith * (rim * 0.55f);
+    const float fres = f0 + (1.0f - f0) * std::pow(1.0f - ndv, 5.0f);
+    // Dry skin: a broad sheen. Oily skin: a tight, bright highlight on top of it.
+    const float broad = std::pow(nh, 14.0f + 26.0f * (1.0f - oily));
+    const float tight = std::pow(nh, 120.0f + 460.0f * oily);
+    const float oilGain = 0.30f + 0.85f * oily;
+    color += scene.sunColor * (specGain * fres * sunVisibility * breakup) *
+             (broad * 0.10f + tight * 0.50f * oilGain);
+
+    // --- fuzz ---------------------------------------------------------------------
+    // Peach fuzz catches the key at grazing angles and gives the silhouette its softness.
+    const float fuzz = std::pow(1.0f - ndv, 3.5f) * saturate(ndl * 0.6f + 0.35f);
+    color += scene.skyZenith * (fuzz * 0.30f * skin);
+    const float rim = std::pow(1.0f - ndv, 3.5f) * saturate(dot(nrm, rimDir));
+    color += scene.skyZenith * (rim * 0.40f);
     return color;
 }
 
@@ -752,8 +824,9 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                         // shorter penetration (skin is opaque, so only the depth gap to
                         // the hair above it matters).
                         const float lit = shadow.visibility(pos, 0.004f);
+                        const Vec3 localHere = invXform.transformPoint(pos) - headCenter;
                         s.color = shadeScannedSkin(nrm, V, scene, texelFetch(scene.skinAlbedo, uvHere),
-                                                   specGain, scalpHere, lit);
+                                                   specGain, scalpHere, lit, uvHere, localHere);
                         s.depth = z;
                         continue;
                     }

@@ -154,7 +154,26 @@ frame of the fibre. The multiple-scattering term is the dual-scattering approxim
 environment is the analytic sky sampled along the fibre normal (diffuse) and along the reflection
 vector (specular), which is a closed-form stand-in for a prefiltered cubemap.
 
-### Skin, face masks and eyes (both renderers)
+### Scanned skin (the path the shipped images use)
+
+Two heads ship (`assets/heads/head_scan.glb`, male, CC BY; `assets/heads/female_head_scan.glb`,
+female, CC0), and both are shaded from their own photographic albedo by `shadeScannedSkin()` in
+`src/render/software_renderer.cpp`. The model is three layered terms rather than a lambert plus a
+highlight:
+
+| Term | What it does |
+| --- | --- |
+| subcutaneous | `albedo * (1.0, 0.30, 0.21)` weighted by `exp(-ndl^2 * 6) + 0.5 max(0, -ndl)`, so the terminator of the face is red and thin parts glow when backlit |
+| specular split | a **T-zone mask in head space** (forehead, nose bridge, chin) drives a broad dry lobe (`nh^14..40`) against a tight oily one (`nh^120..580`) |
+| pores | a hash of the atlas UV *scales* the highlight (0.80-1.20x). Tilting a perturbed normal was tried first and banded: the sine hash correlates along UV diagonals, which on a cheek reads as a smear |
+| ambient/occlusion | sky+ground ambient scaled by `0.34 + 0.21 * sunVisibility`, so creases darken in the sky light too |
+| fuzz | `(1 - ndv)^3.5` rim in the sky colour, masked off the scalp |
+
+The hair shadow that multiplies the sun term comes from the envelope buffer below, and its 3x3 tap
+is blended 35 % toward the *darkest* tap: the buffer stores only the outermost caster per cell, so
+an empty cell reads as fully lit and paints bright stripes across a shadowed cheek.
+
+### Skin, face masks and eyes (the procedural head, both renderers)
 
 The head is not part of the paper, so its shading is documented here to keep the two renderers in
 step. `headFaceMasks(localPos)` in `src/core/assets.cpp` inverts the head parameterisation
@@ -196,8 +215,9 @@ hair or as a wig. Every strand is authored along its own **arc length in metres*
 
 ### The head the hair is fitted to
 
-The paper assumes a head mesh and a scalp parameterization (Section 3.1); this repository ships a
-photogrammetry scan (`assets/heads/head_scan.glb`, CC BY 3.0, see `assets/heads/LICENSE-head_scan.txt`).
+The paper assumes a head mesh and a scalp parameterization (Section 3.1); this repository ships two:
+a photogrammetry scan (`assets/heads/head_scan.glb`, male, CC BY 3.0) and a MakeHuman bust
+(`assets/heads/female_head_scan.glb`, female, CC0, built by `tools/prep_female.py`).
 `HeadModel::loadScan()` keeps the interface the hair mesh needs - `surfacePoint(theta, phi)`,
 `surfaceNormal`, `hairlinePhi`, `defaultPatch()` - and implements `surfacePoint` by **rasterising the
 scan into a 256x192 radial depth map around the head centre** and interpolating it. The hair is
@@ -213,6 +233,20 @@ skin sample within ~12 mm of the envelope along the light is lit, deeper samples
 uses ~4 mm because it is opaque. That gives the lit shell, the dark clump interiors and the shadow
 the hair throws on the forehead, cheek and neck from one buffer of a few thousand quads - which is
 what makes the model renderable at crowd scale, where a per-strand shadow map is not.
+
+## 8b. Figure 10's ten presets
+
+`HairStyleSpec::fromFigure10(i, seed)` + `StylingParams::fromPreset(i, seed)` build the ten
+presets from styling parameters, exactly as Figure 10 does (`--style 0..9`). They are rendered on
+the female head in `docs/images/styles_female.png`. The honest limitation: the presets differ
+convincingly in dye, length and curl, but the *silhouette* families are under-authored -
+`ponytail` needs a gathered mass behind the head and `pixie` a shorter hairline and volume
+profile, neither of which is a styling parameter today. See `docs/COMPARISON.md` §4.
+
+The hairline (§3.1's `hairlinePhi`) is the head's anatomical curve - 63 degrees from the crown at
+the front, 116 degrees at the nape - and a preset extends it with
+`HairStyleSpec::hairlineDrop` when it wants a fringe. The scalp mask reads the *same* function, so
+the dark scalp and the hair's own edge can never disagree.
 
 ## 9. Anti-aliasing
 

@@ -29,6 +29,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/SilkCrowd                 # Qt6 editor (100-head crowd, dockable inspector)
 ./build/SilkCrowd --screenshot out.png --scene head --style 0
+
+# the female head, in profile, on a studio backdrop (the framing of the reference photos)
+./build/SilkCrowd --screenshot bob.png --scene head --style 4 --yaw 78 --studio \
+    --strands 40000 --head-scan female
 ```
 
 Android:
@@ -206,7 +210,14 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
   approximation stands in for the strands LOD removed, and PCF shadows come from a 2048^2 depth
   map. Hair is composited back-to-front against the opaque depth buffer (a single depth-tested
   pass keeps only the front shell - that is Figure 4a's artifact).
-* **Head / body / teapot**: the face is shaded from **analytical masks** evaluated in head-local
+* **Scanned skin** (the path every image here uses): the scan's photographic albedo, lit by a
+  layered skin model rather than by a lambert term - a **subcutaneous** term that keeps the
+  terminator red, a **T-zone mask** evaluated in head space (forehead, nose bridge, chin) that
+  splits the specular into a broad dry sheen and a tight oily highlight, **pore-scale
+  breakup** from a hash of the atlas UV (a scaling of the highlight, not a normal tilt: the tilt
+  version banded along UV diagonals), sky/ground ambient that is occluded as well as the sun, and
+  a **fuzz** rim. `shadeScannedSkin()` in `src/render/software_renderer.cpp`.
+* **Head / body / teapot** (the procedural head): the face is shaded from **analytical masks** evaluated in head-local
   space (`headFaceMasks`: brows, vermilion, stomion, nostrils, nose dorsum and side walls,
   nasolabial and lip creases, sockets, blush, jaw AO). The same masks are evaluated by the software
   rasteriser (`shadeSkin`) and by `shaders/head.frag`, so the two paths shade a face identically;
@@ -285,15 +296,24 @@ across the forehead, the cheek and the neck - for a few thousand rasterised quad
 
 ### What this is not
 
-**The head is a scan, and the scan is male.** `assets/heads/head_scan.glb` is a real
-photogrammetry bust, not a modelled character, so it has the anatomy the renderer needs -
-a cranium the hair can actually sit on, brow ridge, closed lids with lashes, ears, neck,
-shoulders and pore-level skin detail. What it is not is a *female* face: the Infinite-Realities
-scan is a male model, and no CC-licensed female head scan was reachable without a sign-in-gated
-asset site. The scan was therefore fitted (uniform scale, no reshaping) and digitally shaved,
-and the repository's own `HeadModel` parametric surface - which *is* a female head, and is what
-`--procedural-head` uses - is kept for reference. Swapping in a female scan is a file swap:
-`HeadModel::loadScan()` needs POSITION/NORMAL/TEXCOORD_0 and a base-colour texture, nothing else.
+**The head is a scan - and there are two of them.** `assets/heads/head_scan.glb` is a male
+photogrammetry bust (CC BY 3.0) and the default; `assets/heads/female_head_scan.glb` is a female
+bust built from MakeHuman's CC0 base mesh (5,224 vertices, 9,878 triangles, a 2048^2 authored
+skin atlas, 6.1 MB) and is selected with `--head-scan female`. Neither is a modelled character:
+they have the anatomy the renderer needs - a cranium the hair can sit on, lids, lashes, ears,
+neck, shoulders, pore-level skin - but they are not the groomed, art-directed faces of the
+paper's figures.
+
+The female head needs two things that a generic `loadScan()` would not do, and both live in
+`tools/prep_female.py`: the bust is cut and fitted into the shared head space, and the **eyes are
+rebuilt**. MakeHuman models each eyeball as a closed 308-vertex shell, but paints it flat red in
+the body texture, and its shells render inside out through the lid aperture (a probe render showed
+the visible patch mapping to the *far* hemisphere of their UV island). So the shells are dropped
+and replaced with front-projected globes - a stereographic unwrap about the cornea, wound outward,
+painted into the atlas islands the old shells leave free. The paint itself is geometric: the pupil
+and the iris are the real angular bands of a 12 mm iris on a 23.5 mm globe, so they can be measured
+rather than hand-tuned. Swapping in another head is still a file swap: POSITION/NORMAL/TEXCOORD_0
+plus a base-colour map.
 
 **The hair is not a groomed strand asset.** There is no stored strand buffer anywhere - every
 strand is generated from the five hair mesh textures each frame, which is the whole point of the
@@ -304,6 +324,34 @@ here is the structure - hair mesh volume, clump tubes, ringlets, resolved ribbon
 self-shadowing - and the paper's cost, not an arbitrary artist's groom.
 
 ---
+
+## How close is it, honestly?
+
+`docs/COMPARISON.md` is the adversarial version of this README: it puts our renders next to the
+paper's figures and next to the three reference photographs the project was judged against
+(`docs/images/compare_reference.png`), rates them criterion by criterion, and lists what is still
+visibly wrong and why. The short version:
+
+* **functionally** the pipeline is implemented - hair mesh only, Figure 3e slices, Eq. 1-12,
+  blue-noise roots, the storage targets - and `--validate` checks it;
+* **visually** a single head is roughly half to two thirds of the reference bar; the gap is
+  concentrated in three places: strand-level detail (ribbons read as brushed, not resolved), curl
+  at clump scale (ours is a waffle, the reference is ringlets), and flyaways (we have none that
+  leave the silhouette);
+* **performance** is not compared: the paper's 2 ms is an RTX 4090, this machine has no GPU, and
+  the Vulkan path in this repository has never been executed here.
+
+![The ten Figure 10 presets on the female head](docs/images/styles_female.png)
+
+*The ten Figure 10 presets, generated from styling parameters on the female head (`--head-scan
+female`). Dye, length and curl vary convincingly; the silhouettes do not vary enough - `ponytail`
+and `pixie` do not read as their names, which `docs/COMPARISON.md` lists as a known gap.*
+
+![SilkCrowd against the reference photographs](docs/images/compare_reference.png)
+
+*Top: the three reference panels supplied for this project. Bottom: the same profile view rendered
+here with `--yaw 78 --studio`. Our bouffant is a smooth helmet with a blunt hem; the reference has
+resolved fibres, ringlet clumps and flyaways. This is the honest gap.*
 
 ## Per-platform renders
 

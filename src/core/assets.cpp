@@ -297,7 +297,10 @@ Vec3 HeadModel::surfaceNormal(float theta, float phi) const {
 namespace {
 
 // The hairline as a function of azimuth, in the shared parameterization: 63 deg from the
-// crown over the forehead, sweeping back to 116 deg at the nape, low over the temples.
+// crown over the forehead, sweeping back to 116 deg at the nape, low over the temples. This is
+// the *anatomical* hairline; a fringe is a styling choice, so styles that have one extend it
+// with `HairStyleSpec::hairlineDrop` instead of the head moving its own hairline (which is what
+// a global change did -- it gave the male scan a fringe over the eyes).
 inline float hairlineAngle(float theta) {
     const float front = clampf(std::cos(theta), -1.0f, 1.0f);
     return 1.10f + 0.92f * (0.5f - 0.5f * front);
@@ -761,7 +764,9 @@ FaceMasks headFaceMasks(const Vec3& localPos) {
     m.ao = saturate(m.ao);
     // Above the hairline the surface is scalp, and scalp under dark hair is dark: if a
     // hairstyle opens a seam, what shows through must not be a bald patch of skin.
-    const float hairline = 1.10f + 0.92f * (0.5f - 0.5f * std::cos(theta));
+    // One hairline for the whole head: this used to duplicate the curve in `hairlineAngle`,
+    // and the two drifted apart the moment either was tuned.
+    const float hairline = hairlineAngle(theta);
     // 1 above the hairline. Above it, what shows through a parted lock is scalp, not skin.
     m.scalp = 1.0f - smoothstepf(hairline - 0.06f, hairline + 0.04f, phi);
     return m;
@@ -1132,6 +1137,22 @@ HairStyleSpec HairStyleSpec::fromFigure10(int index, uint32_t seed) {
                 s.length = 0.10f; s.fall = 0.5f; s.volume = 0.010f; s.backBias = 0.0f; break;
         default: s.name = "platinum_bob";  s.gridU = 30; s.gridV = 24; s.numLayers = 6;
                 s.length = 0.17f; s.fall = 0.88f; s.volume = 0.014f; s.backBias = 0.2f; break;
+    }
+    // A fringe is a styling decision, and every preset here except the slicked-back ones has
+    // one: `hairlineDrop` extends the hairline's *front* only, so the fringe covers the
+    // forehead without the head's own hairline moving (which is what put a fringe over the
+    // male scan's eyes when this was done globally).
+    switch (index % 10) {
+        case 0: s.hairlineDrop = 0.06f; break;   // long_straight: parted, some sweep
+        case 1: s.hairlineDrop = 0.07f; break;   // wavy_medium
+        case 2: s.hairlineDrop = 0.10f; break;   // curly_short
+        case 3: s.hairlineDrop = 0.05f; break;   // afro: hairline stays high
+        case 4: s.hairlineDrop = 0.12f; break;   // bob: blunt fringe
+        case 5: s.hairlineDrop = 0.04f; break;   // ponytail: hair is pulled back
+        case 6: s.hairlineDrop = 0.08f; break;   // beach_waves
+        case 7: s.hairlineDrop = 0.08f; break;   // curly_long
+        case 8: s.hairlineDrop = 0.06f; break;   // pixie
+        default: s.hairlineDrop = 0.12f; break;  // platinum_bob
     }
     s.styling = StylingParams::fromPreset(index, seed);
     // Styling amplitudes live in object space: scale them with the hair length so that
