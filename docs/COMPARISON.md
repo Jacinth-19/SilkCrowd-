@@ -57,15 +57,15 @@ The side-by-side sheet is `docs/images/compare_reference.png`; the ten-style she
 | Figure 3e's three intermediate slices | root, two intermediates, tip | `HairMesh::sliceCount` reproduces it; `--validate` checks slice indices, spacing and the root copy | **parity** |
 | Eq. 1-4, per-vertex frames | frames from the mesh, not finite differences | `hairTextureFrames()`; `--finite-differences` renders Figure 4a's seam on demand to show the difference | **parity** |
 | Eq. 5-6, strand interpolation | within a quad, bilinear in the local frame | `generateStrands()` | **parity** |
-| Eq. 7-8, strand LOD | strand count from screen-space density | reproduced; 39,900 defined -> 9,694 rendered in the head scene (24.3 %) | **parity** |
+| Eq. 7-8, strand LOD | strand count from screen-space density | reproduced; 39,780 defined -> 14,488 rendered (36.4 %) | **parity** |
 | Eq. 9-12, vertex LOD | vertex count from the same criterion | reproduced; `--no-lod` for Figure 8 comparisons | **parity** |
 | §3.2 parallelism | generation and shading distributed over the mesh | compute + task/mesh shaders in `shaders/hair_compute.comp`, `hair.task`, `hair.mesh`, CPU jobs in the software path | **parity in code, unexecuted on a GPU here** |
 | §3.3 blue-noise root placement | stratified, blue-noise-ish roots | `root_placement` module + tests | **parity** |
 | §3.5 self-shadowing | deep shadowing of hair and skin | one light-space envelope buffer with a penetration distance (§"Deep self-shadowing" in the README); no strand BVH | **partial** - the paper's version can shadow through individual fibres; ours cannot see through the envelope, so a thick clump shadows like a solid |
 | Figure 10 styling presets | ten female hairstyles from styling parameters | ten presets, all from `StylingParams` | **partial** - see §4 |
 | Figure 1 storage target | 13-21 KB per model, 1.7 MB for 100 | 14-19 KB per model, 166.1 KB for ten crowd presets | **parity** |
-| Figure 1 timing | 2 ms for 100 characters x 100k strands | 20.1 s software; Vulkan path never executed here | **not compared** |
-| Figure 9 (200 teapots) | 1.8 ms (8x MSAA) / 1.1 ms, 3.2 MB | 17.5 s software, 1.53 MB textures | **not compared** |
+| Figure 1 timing | 2 ms for 100 characters x 100k strands | 14.9 s software; Vulkan path never executed here | **not compared** |
+| Figure 9 (200 teapots) | 1.8 ms (8x MSAA) / 1.1 ms, 3.2 MB | 12.4 s software, 1.53 MB textures | **not compared** |
 | No-LOD workload (§4, Figure 9) | 47 ms / 150 ms | 1,025,711 of 10,000,000 strands survive LOD (10.3 %) | **workload parity** |
 
 The honest summary: **the algorithm is implemented, the numbers that depend on a GPU are not
@@ -135,9 +135,9 @@ answer from this repository is *don't trace anything, and make the raster path c
 
 | Scene | Strands defined | Strands after LOD | Triangles | Textures | Software frame (480x300, ssaa 1) |
 | --- | --- | --- | --- | --- | --- |
-| 1 head, bob | 39,900 | 9,694 (24.3 %) | 620,416 | 0.43 MB | 840 ms |
-| 100 heads | 9,998,570 | 741,807 (7.4 %) | 31,392,640 | 1.61 MB | 20.1 s |
-| 200 teapots | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB | 17.5 s |
+| 1 head, bob | 39,780 | 14,488 (36.4 %) | 927,232 | 0.18 MB | 839 ms |
+| 100 heads | 9,998,570 | 754,433 (7.5 %) | 31,982,960 | 1.61 MB | 14.9 s |
+| 200 teapots | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB | 12.4 s |
 
 The software rasteriser is ~1-2 % of a modern IGPU's fill and geometry throughput, so these are
 workload numbers, not predictions. Scale them: an Iris Xe (96 EU) or a Radeon 780M has roughly

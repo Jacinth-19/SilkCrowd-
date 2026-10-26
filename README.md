@@ -134,21 +134,21 @@ devices (see the per-platform table at the end).
 
 | Workload | Strands defined | Strands rendered with LOD | Triangles | Texture storage |
 | --- | --- | --- | --- | --- |
-| Hero head (bob, Figure 10 style 4) | 39,900 | 9,694 (24.3 %) | 620,416 | 0.43 MB |
-| Crowd, 100 heads (Figure 1) | 9,998,570 | 741,807 (7.4 %) | 31,392,640 | **1.61 MB** (14.1-19.1 KB/model) |
+| Hero head (bob, Figure 10 style 4) | 39,780 | 14,488 (36.4 %) | 927,232 | 0.18 MB |
+| Crowd, 100 heads (Figure 1) | 9,998,570 | 754,433 (7.5 %) | 31,982,960 | **1.61 MB** (14.1-19.1 KB/model) |
 | 200 teapots x 50k (Figure 9) | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB (7.7 KB/model) |
 
-Scene build (hair mesh + all five textures for every model) takes 0.33 s for the hero head - most of
+Scene build (hair mesh + all five textures for every model) takes 0.24 s for the hero head - most of
 it the scanned head being reloaded and its radial depth map rasterised, which is what the hair
-roots are fitted to - 0.34 s for the 100-head crowd and 10 ms for the 200 teapots. It happens once,
+roots are fitted to - 0.34 s for the 100-head crowd and 5 ms for the 200 teapots. It happens once,
 at load time. Frame times are dominated by the software rasteriser's strand generation, which is
 what the GPU path replaces with the task/mesh pipeline.
 
 Rendered-strand fractions grow with resolution and shrink with distance, which is exactly what
 Eq. 7 predicts (`L` is proportional to the vertical resolution `R` and inverse to the distance):
-the same crowd at 800x460 renders 1,273,075 strands (12.7 %) and 80,492,032 triangles, and the
-200 teapots at 800x460 render 1,776,463 strands (17.8 %) and 80,291,840 triangles. The hero head
-sits closest to the camera, which is why it keeps half of its strands.
+the same crowd at 800x460 renders 1,155,729 strands (11.6 %) and 66,545,568 triangles, and the
+200 teapots at 800x460 render 1,571,716 strands (15.7 %) and 62,420,992 triangles. The hero head
+sits closest to the camera, which is why it keeps a third of its strands.
 
 | Paper target | Where it comes from | Status here |
 | --- | --- | --- |
