@@ -96,8 +96,20 @@ crowd presets: 166.1 KB total, 14-19 KB per model (Figure 1 reports 13-21 KB)
 ```
 
 The hero presets under `assets/hairmeshes/` use the full Figure 10 root grids; the `crowd/`
-variants are the Figure 1 budget. `assets/heads/female_head.gltf` (+ `.bin`) is the scalp/head
-model; `tools/make_assets` regenerates everything and `src/app/assets_export.cpp` documents the
+variants are the Figure 1 budget.
+
+**The head is a real scan.** `assets/heads/head_scan.glb` is a 2.2 MB photogrammetry bust -
+9,273 vertices, 17,684 triangles and a 1024^2 diffuse map decoded from the original 4096^2
+capture - of the Infinite-Realities scan by Lee Perry-Smith (CC BY 3.0, licence and full
+attribution in `assets/heads/LICENSE-head_scan.txt`). `tools/prep_head.py` repacks it
+(dropping the unused normal and displacement maps), fits it into SilkCrowd's head space from
+landmarks measured on the mesh itself, and digitally shaves the day's growth off the jaw.
+`src/core/gltf.cpp` is a dependency-free GLB 2.0 reader; the texture is decoded by the
+vendored, public-domain `third_party/stb/stb_image.h`.
+
+`assets/heads/female_head.gltf` (+ `.bin`) remains the parametric head, which is what you get
+with `--procedural-head` or on a checkout without the scan; `tools/make_assets` regenerates the
+.hairmeshes and the export, and `src/app/assets_export.cpp` documents the
 scalp-to-hair-mesh-texture conversion (root-slice construction, Section 3.1).
 
 ---
@@ -118,13 +130,15 @@ devices (see the per-platform table at the end).
 
 | Workload | Strands defined | Strands rendered with LOD | Triangles | Texture storage |
 | --- | --- | --- | --- | --- |
-| Hero head (Figure 10 style) | 39,780 | 19,994 (50.3 %) | 1,279,616 | 0.18 MB |
-| Crowd, 100 heads (Figure 1) | 9,998,570 | 735,357 (7.4 %) | 38,017,440 | **1.61 MB** (14.1-19.1 KB/model) |
+| Hero head (bob, Figure 10 style 4) | 39,900 | 9,694 (24.3 %) | 620,416 | 0.43 MB |
+| Crowd, 100 heads (Figure 1) | 9,998,570 | 741,807 (7.4 %) | 31,392,640 | **1.61 MB** (14.1-19.1 KB/model) |
 | 200 teapots x 50k (Figure 9) | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB (7.7 KB/model) |
 
-Scene build (hair mesh + all five textures for every model) takes 0.23 s for the hero head -
-almost all of it the anatomical head surface, which is evaluated analytically per vertex - 0.26 s
-for the 100-head crowd and 10 ms for the 200 teapots. It happens once, at load time.
+Scene build (hair mesh + all five textures for every model) takes 0.33 s for the hero head - most of
+it the scanned head being reloaded and its radial depth map rasterised, which is what the hair
+roots are fitted to - 0.34 s for the 100-head crowd and 10 ms for the 200 teapots. It happens once,
+at load time. Frame times are dominated by the software rasteriser's strand generation, which is
+what the GPU path replaces with the task/mesh pipeline.
 
 Rendered-strand fractions grow with resolution and shrink with distance, which is exactly what
 Eq. 7 predicts (`L` is proportional to the vertical resolution `R` and inverse to the distance):
@@ -224,37 +238,70 @@ mappings; per-model and per-crowd storage; the XPBD solver (sag-free drift 0.000
 
 ### The hairstyle geometry
 
-A hair mesh's outer layers are *not* an extrusion along one straight direction. They are the
-same anatomical head surface evaluated further along the path the hair takes, which is the only
-way a hairstyle reads as hair rather than as a cone around the skull:
+A hair mesh's outer layers are *not* an extrusion along one straight direction, and they are
+not a sweep around the skull either: every strand is authored along its own **arc length in
+metres**, in the two phases hair actually goes through.
 
-* **The hem is a distance, not an angle.** Each layer is evaluated at a larger polar angle than
-  the one below it, so the hair follows the curve of the skull and stops where the *cut* is.
-  Because crown strands have further to travel before they run out of hem, they are automatically
-  the long ones and the hairline rows only reach the brow - which is exactly how a real cut works,
-  and why the fringe stops at the eyebrow without a special case.
-* **Below the jaw line the hair leaves the scalp and hangs** rather than continuing round the
-  head, with the hang direction turning from straight down (nape) towards sideways-and-back (face)
-  so no lock is ever drawn over the eyes.
-* **A side part** drives both the hem (a thin seam of scalp, evaluated with the scalp mask so the
-  seam is dark rather than a bald patch of skin) and the drift that combed hair has away from it.
-* **Stand-off is mandatory.** The layers of a hair mesh are straight quads between four slices, so
-  on a convex scalp they cut *inside* the skull; the error grows quadratically with the layer
-  spacing and is worst at the pole, where every row starts at the same point. The mesh therefore
-  carries a constant stand-off plus a crown term, and the styles use 6 slices rather than 4.
+* **Phase 1, on the scalp.** From its root the strand follows the head surface until the *fall
+  line*, just above the top of the ear, with a few millimetres of stand-off. The stand-off is
+  mandatory: the layers of a hair mesh are straight quads between slices, so on a convex scalp
+  they cut *inside* the skull, and the error grows with the layer spacing.
+* **Phase 2, hanging.** Past the fall line the strand leaves the surface and falls, holding the
+  silhouette it had at the fall line. This is what makes a bob a bob - a cylinder as wide as the
+  head is at its widest point, with a blunt, slightly A-line hem - instead of a wig that wraps
+  around the jaw and the neck. `style.fall` bends the drop from "straight out" (0, an afro) to
+  "straight down" (1, a bob).
+* **The hem is a distance.** Because the path is measured in metres from the crown, a hem depth
+  means the same thing everywhere on the head: crown strands are the long ones, the hairline
+  rows only reach the brow, and a fringe needs no special case beyond being short. The fall line
+  is clamped to the hairline, so hair never slides down the forehead before it starts to hang.
+* **Volume belongs to the body of the hair**, not to a hat: thin at the crown, thickest through
+  the middle of the mass, gone at the hem, and thicker on the sides and back than over the
+  forehead.
+* **A side part** drives both the hem (a thin seam of scalp, dark rather than a bald patch of
+  skin) and the drift that combed hair has away from it. The drift accumulates towards the tips,
+  so the hair sweeps outwards instead of leaving the parting as a straight wall.
+
+### Clumps, curls and ringlets
+
+Strands are placed inside their bundle's volume, not on a sheet. Each clump is a **tube**:
+every strand keeps its own place across the lock's cross-section for its whole length, and the
+curl phase is **shared by the clump**, with only a small per-strand jitter. That is the
+difference between ringlets and fuzz - a curl whose strands agree on when they turn is a lock,
+a curl whose strands disagree is noise. Curl radius is authored in metres (`curlRadiusM`:
+6 mm is frizz, 8-10 mm is a ringlet), so a short pixie and a long curly style curl at the same
+real size. The GPU path runs exactly the same functions (`styleDisplacement()` +
+`styleDisplacementObject()` in `shaders/hair_common.glsl`).
+
+### Deep self-shadowing
+
+Hair is not an opaque surface: light dies a few millimetres into it. The renderer builds one
+light-space depth buffer of the *styled volumes* (the hair mesh's outer layers, not the strands)
+and tests every hair and skin sample against it with a **penetration distance**: a sample within
+~12 mm of the envelope along the light is lit, everything deeper is not, and skin uses a shorter
+penetration because it is opaque. One buffer therefore produces all three effects that a
+hairstyle needs - bright outer shell, dark clump interiors, and the hard shadow the hair throws
+across the forehead, the cheek and the neck - for a few thousand rasterised quads per model.
 
 ### What this is not
 
-The **head is not a scanned or downloaded asset**. There was no network access to an anatomical
-head model when this was written, so `HeadModel` is a parametric surface: an ellipsoid deformed by
-~40 anatomical landmarks (glabella, nasion, subnasale, stomion, menton, gonial angle, zygomatic
-arch, ...), tessellated non-uniformly so the face gets 3x the sample density of the scalp, with ears
-appended analytically. It reads as a stylised mannequin, not as a photoreal portrait - the skin
-model, the mask set and the eye model are individually plausible, but the silhouette and the
-mid-face planes are approximations, and that is the honest limit of a procedural head. Dropping in a
-real head is a mesh swap: `HeadModel` only has to provide `surfacePoint(theta, phi)`, `hairlinePhi`,
-`defaultPatch` and the meshes, all of which a loaded glTF skin could supply instead
-(`assets/heads/female_head.gltf` is an export of this same procedural mesh, not a scan).
+**The head is a scan, and the scan is male.** `assets/heads/head_scan.glb` is a real
+photogrammetry bust, not a modelled character, so it has the anatomy the renderer needs -
+a cranium the hair can actually sit on, brow ridge, closed lids with lashes, ears, neck,
+shoulders and pore-level skin detail. What it is not is a *female* face: the Infinite-Realities
+scan is a male model, and no CC-licensed female head scan was reachable without a sign-in-gated
+asset site. The scan was therefore fitted (uniform scale, no reshaping) and digitally shaved,
+and the repository's own `HeadModel` parametric surface - which *is* a female head, and is what
+`--procedural-head` uses - is kept for reference. Swapping in a female scan is a file swap:
+`HeadModel::loadScan()` needs POSITION/NORMAL/TEXCOORD_0 and a base-colour texture, nothing else.
+
+**The hair is not a groomed strand asset.** There is no stored strand buffer anywhere - every
+strand is generated from the five hair mesh textures each frame, which is the whole point of the
+paper. That means the strand *placement* is procedural: clumps, curls and flyaways come from the
+styling functions and the blue noise root sets, not from an artist's comb. At the reference
+images' strand density an offline path-traced groom will always look silkier; what is reproduced
+here is the structure - hair mesh volume, clump tubes, ringlets, resolved ribbons, deep
+self-shadowing - and the paper's cost, not an arbitrary artist's groom.
 
 ---
 
@@ -289,6 +336,12 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 * Software-renderer timings (hundreds of milliseconds per frame) are **not** the paper's GPU
   numbers and are not presented as such: they measure the algorithmic workload (strand counts,
   triangles, storage) that the GPU path produces.
+* The **scanned head** is loaded, fitted and shaded by the software path (every image in this
+  README is rendered with it). The Vulkan path draws the same scan mesh and the same scalp
+  parameterization, but its skin shader still evaluates the *analytic* face masks rather than
+  sampling the scan's texture: binding the 1K diffuse to the head pipeline is the one piece of the
+  scan integration that exists only on the software path, because the Vulkan path cannot be run (or
+  its descriptor sets validated) on this machine.
 
 ### What was actually built and run
 
@@ -300,7 +353,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | Unit tests | `./build/silkcrowd_tests` | **3196 checks, 0 failures** |
 | Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
-| Shaders | `glslang` (SPIR-V) | 10/13 compile; `hair.task`, `hair.mesh` need `glslc` |
+| Shaders | `glslang` (SPIR-V) | 10/13 compile; `hair.task`, `hair.mesh` need `glslc` (both were updated by hand in lock step with the CPU styling) |
 | Android entry point | `g++ -fsyntax-only` against stubbed NDK headers | 0 warnings, 0 errors |
 | Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 

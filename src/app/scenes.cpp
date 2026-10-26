@@ -118,8 +118,11 @@ Camera headCamera(int width, int height, float fovYDeg) {
     c.aspect = static_cast<float>(width) / static_cast<float>(height);
     // A three-quarter view: it reads the way the reference renders do, and it shows the
     // nose, the cheekbone and the jaw as forms rather than as a silhouette.
-    c.position = Vec3(0.255f, 0.072f, 0.445f);
-    c.target = Vec3(0.005f, 0.008f, 0.0f);
+    // Framed for the scanned bust, which is 21 cm from crown to chin and ~7 cm wider than
+    // the parametric head across the shoulders: the head fills the frame from the collarbone
+    // up, with a little air above the hair.
+    c.position = Vec3(0.300f, 0.082f, 0.665f);
+    c.target = Vec3(0.004f, -0.068f, 0.0f);
     c.nearZ = 0.05f;
     return c;
 }

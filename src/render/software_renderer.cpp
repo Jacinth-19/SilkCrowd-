@@ -78,10 +78,10 @@ inline Vec3 shadeHair(Vec3 tangent, Vec3 position, Vec3 viewDir, const Scene& sc
     // layers, so a lobe that looks fine on one ribbon accumulates into a blown-out patch
     // where the surface faces the key light. The wide lobe supplies the band, the narrow
     // one the glints.
-    const float spec = lobe(0.12f, 78.0f, 0.30f) + lobe(-0.16f, 22.0f, 0.13f) +
-                       lobe(0.04f, 6.0f, 0.025f);
+    const float spec = lobe(0.12f, 78.0f, 0.40f) + lobe(-0.16f, 22.0f, 0.19f) +
+                       lobe(0.04f, 6.0f, 0.04f);
     const Vec3 specColor = lerp(Vec3(1.0f, 0.96f, 0.90f), sp.color * 3.0f + Vec3(0.1f), 0.45f);
-    color += specColor * scene.sunColor * (spec * scene.sunIntensity * 0.22f * ao * sunVisibility);
+    color += specColor * scene.sunColor * (spec * scene.sunIntensity * 0.30f * ao * sunVisibility);
 
     // Sky ambient (approximate IBL).
     Vec3 nApprox = normalize(cross(T, normalize(cross(T, V) + Vec3(1e-5f, 0, 0))));
@@ -117,7 +117,6 @@ struct HairShadow {
     void addHairMesh(const HairMesh& mesh, const Mat4* xform, uint32_t firstLayer);
     void addMesh(const Mesh& mesh, const Mat4* xform);
     void addTriangle(Vec3 a, Vec3 b, Vec3 c);
-    float casterDepth(Vec3 p) const;
     // 1 where the point sees the sun, 0 deep inside the hair.
     float visibility(Vec3 p, float penetration) const;
 };
@@ -235,18 +234,6 @@ void HairShadow::addHairMesh(const HairMesh& mesh, const Mat4* xform, uint32_t f
             }
         }
     }
-}
-
-float HairShadow::casterDepth(Vec3 p) const {
-    if (!valid) return -1e30f;
-    const Vec3 q = p - center;
-    const float scale = static_cast<float>(size) / (2.0f * extent);
-    const float fx = (dot(q, axisU) + extent) * scale - 0.5f;
-    const float fy = (dot(q, axisV) + extent) * scale - 0.5f;
-    const int x = static_cast<int>(std::floor(fx));
-    const int y = static_cast<int>(std::floor(fy));
-    if (x < 0 || y < 0 || x >= size || y >= size) return -1e30f;
-    return depth[static_cast<size_t>(y) * size + x];
 }
 
 float HairShadow::visibility(Vec3 p, float penetration) const {
@@ -954,7 +941,11 @@ void SoftwareRenderer::render(const Scene& scene, const Camera& camera,
                                               static_cast<float>(f) * 0.517f, 3.7f));
                 const float flyaway = jit > 0.972f ? 1.0f : 0.0f;
                 StylingParams spj = inst.styling;
-                const float value = 0.975f + 0.05f * jit + 0.055f * clumpJit + 0.20f * flyaway;
+                // Coherent per-clump variation is what makes a hairstyle read as many locks
+                // rather than one sheet of paint; per-strand jitter on top is deliberately
+                // small (strong per-strand jitter is straw).
+                const float value = 0.955f + 0.045f * jit + 0.135f * (clumpJit - 0.5f) +
+                                    0.22f * flyaway;
                 spj.color = Vec3(inst.styling.color.x * value * (0.99f + 0.03f * jit),
                                  inst.styling.color.y * value,
                                  inst.styling.color.z * value * (1.01f - 0.02f * jit));

@@ -173,22 +173,46 @@ globe, a lash fan with per-lash length jitter on both lids, a crease and two cat
 
 The paper takes a hair mesh as given ("manually prepared"); `buildHairMesh()` in
 `src/core/assets.cpp` has to author one, and the choices there decide whether the result reads as
-hair or as a wig. It follows the surface rather than extruding:
+hair or as a wig. Every strand is authored along its own **arc length in metres**, in two phases:
 
-* layer `l` is `surfacePoint(theta + drift, phi_l)` where `phi_l` interpolates from the root's polar
-  angle towards a per-row **hem**, so the hair wraps the skull exactly as the root layer does;
-* the hem is a distance along the surface (metres), not an angle, so crown strands are long and
-  hairline strands are short - the fringe stops at the brow as a consequence of the cut, and a bob
-  and a 35 cm style share one parameterisation;
-* past the jaw line (`phi > 2.30`, ~23 cm of arc from the crown) the hair leaves the scalp and
-  hangs down, with the hang direction turning from vertical at the nape to sideways-and-back at the
-  face so no lock is drawn over the eyes;
-* a constant stand-off plus a crown term keeps the coarse 4-gons of the hair mesh outside the skull
-  (the chord error grows quadratically with slice spacing and is worst at the pole), and the hero
-  styles use 6 slices rather than 4;
-* the parting drives a hem seam and the lateral drift; because the hemisphere above the hairline is
-  tagged by `FaceMasks::scalp` in *both* renderers, a seam that opens shows dark scalp rather than
-  a bald patch of skin.
+* **on the scalp** - from the root the strand follows the head surface to the *fall line* (just
+  above the top of the ear) with a few millimetres of stand-off. The stand-off is required by the
+  representation, not by taste: the layers of a hair mesh are straight quads between slices, so on
+  a convex scalp they cut inside the skull, and the chord error grows with the slice spacing;
+* **hanging** - past the fall line the strand leaves the surface and falls, holding the silhouette
+  it had at the fall line (`style.fall` bends the drop from straight out, an afro, to straight
+  down, a bob). This is what makes a bob a cylinder with a blunt hem instead of a wig wrapped
+  around the jaw, and it is why the root layer can stay an exact copy of the scalp while the outer
+  layers stop following it;
+* the **hem is a distance**, so a hem depth means the same thing everywhere: crown strands are the
+  long ones, the hairline rows only reach the brow, and the fringe needs no special case. The fall
+  line is clamped to the hairline, so no strand slides down the forehead before it hangs;
+* **volume** is thin at the crown, thickest through the body of the hair and gone at the hem, and
+  is *not* uniformly inflated (a uniform inflation reads as a helmet);
+* the parting drives a hem seam and the lateral drift, which accumulates towards the tips so the
+  hair sweeps away from the part instead of leaving it as a wall. Because the hemisphere above the
+  hairline is tagged in *both* renderers - `Mesh::scalpMask` for a scanned head, `FaceMasks::scalp`
+  for the parametric one - a seam that opens shows dark scalp rather than a bald patch of skin.
+
+### The head the hair is fitted to
+
+The paper assumes a head mesh and a scalp parameterization (Section 3.1); this repository ships a
+photogrammetry scan (`assets/heads/head_scan.glb`, CC BY 3.0, see `assets/heads/LICENSE-head_scan.txt`).
+`HeadModel::loadScan()` keeps the interface the hair mesh needs - `surfacePoint(theta, phi)`,
+`surfaceNormal`, `hairlinePhi`, `defaultPatch()` - and implements `surfacePoint` by **rasterising the
+scan into a 256x192 radial depth map around the head centre** and interpolating it. The hair is
+therefore fitted to the real skull rather than to a fitted ellipsoid: roots sit on the scan, the
+hairline lands on its forehead, and the nape rows follow its actual occiput. `phi = 0` is still the
+crown and `theta = 0` still faces +Z, so every angle in Section 3.1 keeps its meaning.
+
+### Self-shadowing (Section 3.5's shading, done without a strand BVH)
+
+A hair mesh has no strands to trace, but it does have a *volume*. One light-space depth buffer is
+rasterised from the hair mesh's outer layers and sampled with a penetration distance: a hair or
+skin sample within ~12 mm of the envelope along the light is lit, deeper samples are not, and skin
+uses ~4 mm because it is opaque. That gives the lit shell, the dark clump interiors and the shadow
+the hair throws on the forehead, cheek and neck from one buffer of a few thousand quads - which is
+what makes the model renderable at crowd scale, where a per-strand shadow map is not.
 
 ## 9. Anti-aliasing
 
