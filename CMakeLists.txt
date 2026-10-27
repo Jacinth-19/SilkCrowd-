@@ -195,6 +195,20 @@ add_custom_command(TARGET SilkCrowd POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           ${CMAKE_CURRENT_SOURCE_DIR}/assets $<TARGET_FILE_DIR:SilkCrowd>/assets
   COMMENT "Copying hair mesh presets next to the executable")
+if(WIN32 AND Vulkan_FOUND)
+  # The Vulkan loader is an import library at link time and a DLL at run time; a machine
+  # without it in PATH fails with STATUS_DLL_NOT_FOUND (0xC0000135) before main(). Copy the
+  # loader next to the executable so a build from this tree always runs.
+  foreach(dir "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+    if(EXISTS "${dir}/vulkan-1.dll")
+      add_custom_command(TARGET SilkCrowd POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dir}/vulkan-1.dll" $<TARGET_FILE_DIR:SilkCrowd>/vulkan-1.dll
+        COMMENT "Copying the Vulkan loader next to the executable")
+      break()
+    endif()
+  endforeach()
+endif()
 
 if(SILKCROWD_BUILD_TESTS)
   add_executable(silkcrowd_tests tests/tests.cpp)
@@ -204,7 +218,14 @@ if(SILKCROWD_BUILD_TESTS)
   enable_testing()
 endif()
 
-install(TARGETS SilkCrowd RUNTIME DESTINATION bin)
+# On iOS (and macOS with MACOSX_BUNDLE) an executable is a bundle, and install(TARGETS)
+# then also needs a BUNDLE DESTINATION - without it the Xcode generator stops with
+# "install TARGETS given no BUNDLE DESTINATION for MACOSX_BUNDLE executable".
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  install(TARGETS SilkCrowd BUNDLE DESTINATION . RUNTIME DESTINATION bin)
+else()
+  install(TARGETS SilkCrowd RUNTIME DESTINATION bin BUNDLE DESTINATION .)
+endif()
 install(DIRECTORY ${SILKCROWD_SHADER_OUT}/ DESTINATION bin/shaders)
 install(DIRECTORY assets/ DESTINATION bin/assets)
 

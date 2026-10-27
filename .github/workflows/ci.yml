@@ -182,6 +182,11 @@ jobs:
           ccache --max-size=1.5G
           cmake -B build -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          # The Vulkan loader is a run-time DLL; without it the binary exits with 0xC0000135
+          # before main() and prints nothing at all.
+          if (Test-Path "$env:VULKAN_SDK\Bin") {
+            Add-Content -Path $env:GITHUB_PATH -Value "$env:VULKAN_SDK\Bin"
+          }
       - name: Build
         run: |
           cmake --build build --config Release -j 2 *>&1 | Tee-Object -FilePath build.log
