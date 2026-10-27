@@ -31,6 +31,11 @@ struct GpuHairModel {
     uint32_t dims[5][3] = {};
     VkDeviceMemory bundleMemory = VK_NULL_HANDLE;
     VkBuffer bundleBuffer = VK_NULL_HANDLE;
+    // Byte offset of the per-bundle meta array inside bundleBuffer (the layout is
+    // vec4 bundles[N] followed by vec4 meta[N]). The shaders see BundleMeta as its own
+    // buffer, so its descriptor uses this offset - without it the mesh shader read the
+    // bundle centers as metadata.
+    VkDeviceSize bundleMetaOffset = 0;
     // set 0 = the five textures, set 1 = model uniforms, set 2 = bundle data + meta
     VkDescriptorSet descriptorSets[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkBuffer uniformBuffer = VK_NULL_HANDLE;

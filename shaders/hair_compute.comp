@@ -25,7 +25,9 @@ layout(local_size_x = 32) in;  // one SIMD wavefront per workgroup, one strand p
 
 layout(std430, set = 3, binding = 0) readonly buffer RootSamples { vec2 samples[]; } roots;
 layout(std430, set = 3, binding = 1) readonly buffer RootSamplesTriangle { vec2 samples[]; } rootsTri;
-layout(std430, set = 2, binding = 0) readonly buffer BundleMeta { vec4 meta[]; } bundleMeta;
+// Set 2 binding 0 is BundleData (read by the task shader), binding 1 is BundleMeta - the
+// same convention as hair.mesh, so one descriptor set serves every hair path.
+layout(std430, set = 2, binding = 1) readonly buffer BundleMeta { vec4 meta[]; } bundleMeta;
 
 // Work item table produced by the CPU pre-pass ("Option A").
 //   .x = bundle, .y = strandIndex, .z = vertexExponent, .w = thicknessScale

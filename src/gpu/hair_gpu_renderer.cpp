@@ -49,11 +49,15 @@ struct HairModelUniforms {
     float viewportSize[4];
     float lodParams[4];
     float lodScreen[4];
+    // Member order must match the shader's std140 block in hair_common.glsl exactly:
+    // styling0, styling1, styling2, styling3, styling4. styling4 used to sit between
+    // styling1 and styling2, so the GPU read clump/curl radii where it expected
+    // straightness/volume and vice versa - a silent styling bug, not a validation error.
     float styling0[4];
     float styling1[4];
-    float styling4[4];
     float styling2[4];
     float styling3[4];
+    float styling4[4];
     float hairColor[4];
     float hairParams[4];
 };
@@ -698,11 +702,18 @@ VkDescriptorSet HairGpuRenderer::allocateModelDescriptors(GpuHairModel* model) {
 
     VkDescriptorBufferInfo uniformInfo{model->uniformBuffer, 0, sizeof(HairModelUniforms)};
     VkDescriptorBufferInfo bundleInfo{model->bundleBuffer, 0, VK_WHOLE_SIZE};
+    // Binding 1 is the vec4 meta[] half of the same buffer.
+    VkDescriptorBufferInfo metaInfo{model->bundleBuffer, model->bundleMetaOffset, VK_WHOLE_SIZE};
+    // Shader binding -> upload slot. hair_common.glsl orders set 4 as
+    // 0 hairMesh (3D), 1 w (3D), 2 u (3D), 3 v (3D), 4 uv (2D); uploadHairModel() fills the
+    // views in mesh/uv/w/u/v order. Binding them positionally mixed a 2D and a 3D view, which
+    // validation reports as a viewType mismatch.
+    const int kTextureSlot[5] = {0, 2, 3, 4, 1};
     VkDescriptorImageInfo imageInfos[5];
-    VkWriteDescriptorSet writes[7]{};
+    VkWriteDescriptorSet writes[8]{};
     for (int i = 0; i < 5; ++i) {
         imageInfos[i].sampler = samplerLinear_;
-        imageInfos[i].imageView = model->views[i];
+        imageInfos[i].imageView = model->views[kTextureSlot[i]];
         imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = sets[2];
@@ -723,7 +734,11 @@ VkDescriptorSet HairGpuRenderer::allocateModelDescriptors(GpuHairModel* model) {
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[6].pBufferInfo = &bundleInfo;
-    vkUpdateDescriptorSets(dev, 7, writes, 0, nullptr);
+    // Binding 1 (BundleMeta) is the second half of the same buffer.
+    writes[7] = writes[6];
+    writes[7].dstBinding = 1;
+    writes[7].pBufferInfo = &metaInfo;
+    vkUpdateDescriptorSets(dev, 8, writes, 0, nullptr);
     model->descriptorSets[0] = sets[0];
     model->descriptorSets[1] = sets[1];
     model->descriptorSets[2] = sets[2];
@@ -789,6 +804,7 @@ bool HairGpuRenderer::uploadBundleBuffer(GpuHairModel* model, const std::vector<
                                          const std::vector<uint32_t>& strandCounts,
                                          uint32_t seed) {
     const size_t n = strandCounts.size();
+    model->bundleMetaOffset = static_cast<VkDeviceSize>(n * 4 * sizeof(float));
     std::vector<float> data(n * 8, 0.0f);  // vec4 bundles[] + vec4 meta[]
     for (size_t i = 0; i < n; ++i) {
         data[i * 4 + 0] = bundleSize[i];                 // h for Eq. 7 (strand LOD)
@@ -1103,8 +1119,11 @@ void HairGpuRenderer::recordComputeFallback(VkCommandBuffer cmd, const RenderOpt
                                 sets, 0, nullptr);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hairComputePipeline_);
         HairPush push = makeHairPush(model, opt, false);
-        vkCmdPushConstants(cmd, hairPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(HairPush), &push);
+        // The layout's range is VK_SHADER_STAGE_ALL (one layout serves the compute, task/mesh
+        // and vertex-draw pipelines), and a push must name every stage of the range it
+        // overlaps - hence VK_SHADER_STAGE_ALL rather than just COMPUTE_BIT.
+        vkCmdPushConstants(cmd, hairPipelineLayout_, VK_SHADER_STAGE_ALL, 0, sizeof(HairPush),
+                           &push);
         vkCmdDispatch(cmd, (computeWorkItems_ + 31) / 32, 1, 1);
         dispatched = true;
     }
@@ -1144,10 +1163,8 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
         if (hasMeshShaders_ && hairMeshPipeline_ != VK_NULL_HANDLE) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               shadowPass ? shadowHairPipeline_ : hairMeshPipeline_);
-            vkCmdPushConstants(cmd, hairPipelineLayout_,
-                               VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(HairPush), &push);
+            vkCmdPushConstants(cmd, hairPipelineLayout_, VK_SHADER_STAGE_ALL, 0,
+                               sizeof(HairPush), &push);
             cmdDrawMeshTasksExt_(cmd, model.numFaces * model.chunksPerBundle, 1, 1);
         } else {
             // The ribbons were generated by recordComputeFallback() before either pass; the
@@ -1169,9 +1186,8 @@ void HairGpuRenderer::recordHairDraw(VkCommandBuffer cmd, const Camera& cam,
                         shadowPass ? lightViewProj_ : cam.proj() * cam.view();
                     copyMat(frameViewProj * inst.transform, dp.mvp);
                     copyMat(inst.transform, dp.model);
-                    vkCmdPushConstants(cmd, drawPipelineLayout_,
-                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                       0, sizeof(dp), &dp);
+                    vkCmdPushConstants(cmd, drawPipelineLayout_, VK_SHADER_STAGE_ALL, 0,
+                                       sizeof(dp), &dp);
                     vkCmdBindIndexBuffer(cmd, strandIndexBuffer_, 0, VK_INDEX_TYPE_UINT32);
                     vkCmdDrawIndexed(cmd, computeIndexCount_, 1, 0, 0, 0);
                 }
@@ -1822,14 +1838,17 @@ bool HairGpuRenderer::createDescriptorLayouts(std::string* error) {
         b.stageFlags = allStages;
         if (!make({b}, &modelLayout_, "model")) return false;
     }
-    // set 2: per-hair-model bundle table (one vec4 per bundle: center + size/length).
+    // set 2: per-hair-model bundle table. Binding 0 is BundleData (read by the task shader),
+    // binding 1 is BundleMeta (read by the mesh shader); both are ranges of the same buffer.
     {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0;
-        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        b.descriptorCount = 1;
-        b.stageFlags = allStages;
-        if (!make({b}, &bundleLayout_, "bundle")) return false;
+        VkDescriptorSetLayoutBinding b[2]{};
+        for (int i = 0; i < 2; ++i) {
+            b[i].binding = static_cast<uint32_t>(i);
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = allStages;
+        }
+        if (!make({b[0], b[1]}, &bundleLayout_, "bundle")) return false;
     }
     // set 3: shared root sample tables and compute-path output buffers.
     {

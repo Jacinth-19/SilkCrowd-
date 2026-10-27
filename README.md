@@ -447,7 +447,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
   `./build/SilkCrowd` on this checkout.
 * The **Vulkan path** (`src/gpu`, `shaders/`) compiles in this checkout against the official
   Khronos headers and links into the binary, and every vertex/fragment/compute shader compiles to
-  SPIR-V: all 13, including `hair.task`/`hair.mesh` (verified here with glslang 16 built from
+  SPIR-V: all 12, including `hair.task`/`hair.mesh` (verified here with glslang 16 built from
   source, because no package manager is reachable; that run found and fixed two real shader
   bugs - see "Also fixed on the way" in the PR).
   It has not been *executed* on this machine (no Vulkan driver), so its timings come from the CI
@@ -479,7 +479,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | Unit tests | `./build/silkcrowd_tests` | **3234 checks, 0 failures** |
 | Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
-| Shaders | `glslang` 16 (SPIR-V) | **13/13** compile; every `.spv` starts with the SPIR-V magic. The previous "10/13" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
+| Shaders | `glslang` 16 (SPIR-V) | **12/12** compile; every `.spv` starts with the SPIR-V magic. The previous "10 of 12" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
 | Android entry point | `g++ -fsyntax-only` against stubbed NDK headers | 0 warnings, 0 errors |
 | Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 
