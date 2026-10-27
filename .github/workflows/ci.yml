@@ -1,7 +1,9 @@
 name: CI
 
 # SilkCrowd is validated on every platform the paper's authors could plausibly run it on.
-#   linux      Mesa lavapipe software Vulkan (no GPU needed)
+#   linux      Mesa lavapipe software Vulkan (no GPU needed); every GPU step is gated by
+#              `SilkCrowd --gpu-info`, so a missing loader/driver fails the job instead of
+#              silently rendering with the software rasteriser
 #   windows    Vulkan SDK from LunarG + the software rasteriser fallback
 #   macos      MoltenVK through the Vulkan loader from Homebrew
 #   ios        MoltenVK on an iOS simulator (build only: simulation is headless)
@@ -65,14 +67,30 @@ jobs:
         run: ./build/SilkCrowd --validate --report docs/validation_report.txt
       - name: Unit tests
         run: ./build/silkcrowd_tests
+      - name: Vulkan diagnostics self-test
+        # Proves the diagnostic itself tells four states apart (ready / no-device / no-driver
+        # / unsupported-device) against a synthetic loader, so `--gpu-info` cannot be the
+        # thing that is wrong on a machine where the GPU path fails.
+        run: ./tools/gpu_probe_selftest.sh
+      - name: Vulkan diagnostics
+        # --gpu-info exits 0 only when the Vulkan path would actually run here, and its report
+        # names the first missing piece (build / loader / driver / device). Writing the report
+        # to a file first keeps the exit code: a `| tee` would swallow it.
+        run: |
+          mkdir -p artifacts
+          ./build/SilkCrowd --gpu-info > artifacts/gpu_info.txt
+          cat artifacts/gpu_info.txt
       - name: Headless render (Vulkan, lavapipe)
+        # No VK_ICD_FILENAMES override: the loader finds the lavapipe manifest itself, and a
+        # hard-coded path breaks as soon as Mesa renames it. No `|| true` either - this step
+        # used to "pass" while the GPU path was in fact failing, which is how a broken Vulkan
+        # build could hide behind a green CI run.
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           mkdir -p artifacts
           ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
-            --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless || true
+            --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless
           ./build/SilkCrowd --screenshot artifacts/linux_software.png --scene head \
             --style 0 --strands 40000 --width 960 --height 640 --software
       - name: Upload screenshots
@@ -80,6 +98,13 @@ jobs:
         with:
           name: screenshots-linux
           path: artifacts/*.png
+      - name: Upload Vulkan report
+        # Deliberately not named screenshots-*: the update-readme job downloads that pattern
+        # into docs/images/ci, and a text file has no business there.
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-linux
+          path: artifacts/gpu_info.txt
 
   windows:
     name: Windows (Vulkan SDK)
@@ -111,6 +136,14 @@ jobs:
         run: cmake --build build --config Release -j 2
       - name: Validation suite
         run: build/Release/SilkCrowd.exe --validate
+      - name: Vulkan diagnostics
+        # Informational here: a hosted Windows runner has the loader but no ICD, so the expected
+        # verdict is `no-driver`. The Linux job is the hard gate; this report is what makes the
+        # Windows render step's outcome readable after the fact.
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          build/Release/SilkCrowd.exe --gpu-info | Tee-Object -FilePath artifacts/gpu_info.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Vulkan path unavailable on this runner" }
       - name: Headless render (5 s)
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
@@ -121,6 +154,11 @@ jobs:
         with:
           name: screenshots-windows
           path: artifacts/*.png
+      - name: Upload Vulkan report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-windows
+          path: artifacts/gpu_info.txt
 
   macos:
     name: macOS (MoltenVK)
@@ -158,9 +196,17 @@ jobs:
         run: cmake --build build -j
       - name: Validation suite
         run: ./build/SilkCrowd --validate
-      - name: Headless render
+      - name: Vulkan diagnostics
+        # MoltenVK on a hosted runner is best-effort (it depends on the runner exposing Metal),
+        # so this reports instead of gating. The Linux job is the hard gate for the Vulkan path.
         run: |
           # Resolve the MoltenVK ICD inside the shell: $(...) is not expanded in `env:`.
+          export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
+          mkdir -p artifacts
+          ./build/SilkCrowd --gpu-info > artifacts/gpu_info.txt || true
+          cat artifacts/gpu_info.txt
+      - name: Headless render
+        run: |
           export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
           mkdir -p artifacts
           ./build/SilkCrowd --screenshot artifacts/macos_vulkan.png --scene head --style 2 \
@@ -172,6 +218,11 @@ jobs:
         with:
           name: screenshots-macos
           path: artifacts/*.png
+      - name: Upload Vulkan report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-macos
+          path: artifacts/gpu_info.txt
 
   ios-simulator:
     name: iOS simulator (MoltenVK)

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "app_gpu.h"
+#include "gpu_probe.h"
 #include "scenes.h"
 
 #include "silkcrowd/assets.h"
@@ -77,7 +78,8 @@ void printHelp() {
         "  --bench               benchmark generation + rasterisation, report workloads\n"
         "  --screenshot <file>   render one frame to a PNG\n"
         "  --assets              write assets/heads/*.gltf and assets/hairmeshes/*.skhm\n"
-        "  --interactive         launch the Qt6 editor (requires a build with Qt6)\n\n"
+        "  --interactive         launch the Qt6 editor (requires a build with Qt6)\n"
+        "  --gpu-info            diagnose the Vulkan path: build, loader, driver (ICD), device\n\n"
         "Options:\n"
         "  --scene head|crowd|teapot   scene to render (default head)\n"
         "  --width N --height N        resolution (default 1280x720)\n"
@@ -103,6 +105,8 @@ void printHelp() {
         "  --simulate                  run the XPBD hair mesh simulation before rendering\n"
         "  --no-sag-free               skip the sag-free rest-shape initialization\n"
         "  --gpu / --vulkan            use the Vulkan renderer (default when available)\n"
+        "                              when it is not available, --gpu-info says which piece\n"
+        "                              is missing: the build, the loader, the driver or a device\n"
         "  --software / --cpu          force the dependency-free software rasteriser\n"
         "  --compute                   force the compute-shader fallback (Adreno/UHD path)\n"
         "  --msaa N                    1, 2, 4 or 8 (Vulkan path)\n"
@@ -122,6 +126,7 @@ Args parseArgs(int argc, char** argv) {
             return argv[++i];
         };
         if (s == "--validate") a.mode = "validate";
+        else if (s == "--gpu-info" || s == "--vulkan-info") a.mode = "gpu";
         else if (s == "--bench") a.mode = "bench";
         else if (s == "--screenshot") { a.mode = "screenshot"; a.out = next("--screenshot"); }
         else if (s == "--assets") a.mode = "assets";
@@ -773,8 +778,14 @@ void runScreenshot(const Args& a) {
     if (a.gpu && !a.software) {
         std::string error;
         if (tryGpuScreenshot(a, &error)) return;
+        // Say *which* piece of the Vulkan path is missing. "No driver" used to look exactly
+        // like "the build has no Vulkan renderer", and the fallback quietly hid both.
+        const GpuFacts facts = probeGpu();
         std::printf("Vulkan path unavailable (%s); falling back to the software renderer\n",
                     error.c_str());
+        std::printf("  %s\n", gpuHeadline(facts).c_str());
+        std::printf("  run `SilkCrowd --gpu-info` for the full report "
+                    "(build / loader / driver / device)\n");
     }
 
     if (a.msaa > 1)
@@ -830,6 +841,13 @@ int main(int argc, char** argv) {
         return report.find("FAILURES") != std::string::npos ? 1 : 0;
     }
     if (args.mode == "bench") { runBench(args); return 0; }
+    if (args.mode == "gpu") {
+        const GpuFacts facts = probeGpu();
+        printGpuReport(facts, stdout);
+        // 0 when the Vulkan path would run, 3 when it would not: CI can branch on it without
+        // parsing the text, and the report still explains the failure on stdout.
+        return gpuUsable(facts) ? 0 : 3;
+    }
     if (args.mode == "screenshot") { runScreenshot(args); return 0; }
     if (args.mode == "assets") {
         writeGlif("assets/heads");
@@ -839,8 +857,17 @@ int main(int argc, char** argv) {
     if (args.mode == "interactive") {
         const int rc = runGpuWindow(argc, argv);
         if (rc != 2) return rc;
-        std::printf("This build has no Qt6/Vulkan editor (configure with Qt6 installed). "
+        // Two different reasons land here, and they need different fixes.
+#ifdef SILKCROWD_WITH_QT
+        std::printf("This build has the Qt6 editor but no Vulkan renderer, so the window "
+                    "cannot open (configure with libvulkan headers installed).\n");
+#else
+        std::printf("This build has no Qt6 editor (configure with Qt6 installed). "
                     "Falling back to a headless screenshot.\n");
+#endif
+        if (!gpuUsable(probeGpu())) {
+            std::printf("Run `SilkCrowd --gpu-info` for the Vulkan report.\n");
+        }
         runScreenshot(args);
         return 0;
     }

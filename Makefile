@@ -5,19 +5,26 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter -Iinclude \
             -Ithird_party/stb -DSILKCROWD_SOURCE_DIR='"$(CURDIR)"' -MMD -MP
+# gpu_diag/gpu_probe use dlopen() to answer "is there a Vulkan loader here?" even in a
+# build without Vulkan headers; glibc < 2.34 needs -ldl for that.
+UNAME_S  := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+LDFLAGS  ?= -ldl
+else
 LDFLAGS  ?=
+endif
 BUILD    := build
 
 CORE_SRC := $(wildcard src/core/*.cpp) $(wildcard src/render/*.cpp)
 APP_SRC  := src/app/main.cpp src/app/assets_export.cpp src/app/scenes.cpp \
-            src/app/gpu_app.cpp
+            src/app/gpu_app.cpp src/app/gpu_probe.cpp
 TESTS_SRC:= $(wildcard tests/*.cpp)
 
 CORE_OBJ := $(patsubst src/%.cpp,$(BUILD)/%.o,$(CORE_SRC))
 APP_OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(APP_SRC))
 TEST_OBJ := $(patsubst tests/%.cpp,$(BUILD)/tests/%.o,$(TESTS_SRC))
 
-.PHONY: all clean validate test bench run
+.PHONY: all clean validate test bench run gpu-selftest
 
 all: $(BUILD)/SilkCrowd $(BUILD)/silkcrowd_tests
 
@@ -52,6 +59,11 @@ bench: $(BUILD)/SilkCrowd
 
 run: $(BUILD)/SilkCrowd
 	./$(BUILD)/SilkCrowd --screenshot renders/head.png --scene head
+
+# Exercises the --gpu-info code against a synthetic loader; skips when Vulkan headers are
+# absent, so it is safe to run anywhere.
+gpu-selftest:
+	./tools/gpu_probe_selftest.sh
 
 clean:
 	rm -rf $(BUILD)

@@ -149,8 +149,11 @@ add_executable(SilkCrowd
   src/app/assets_export.cpp
   src/app/scenes.cpp
   src/app/gpu_app.cpp
+  src/app/gpu_probe.cpp
   ${SILKCROWD_QT_SOURCES})
-target_link_libraries(SilkCrowd PRIVATE silkcrowd_core)
+# ${CMAKE_DL_LIBS} carries -ldl on Linux: gpu_probe.cpp dlopen()s the Vulkan loader so the
+# diagnostic also works in a build that has no Vulkan headers at all.
+target_link_libraries(SilkCrowd PRIVATE silkcrowd_core ${CMAKE_DL_LIBS})
 if(SILKCROWD_GPU_SOURCES)
   set_target_properties(SilkCrowd PROPERTIES CXX_STANDARD 17)
   target_link_libraries(SilkCrowd PRIVATE ${SILKCROWD_GPU_SOURCES})

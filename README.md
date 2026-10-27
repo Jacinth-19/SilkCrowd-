@@ -52,6 +52,15 @@ make -j && make test && make validate
 `./build/SilkCrowd --validate` prints a report that checks every paper-critical invariant; it is
 expected to end with `RESULT: all paper-critical invariants validated`.
 
+If `--gpu` silently renders on the CPU, ask why:
+
+```bash
+./build/SilkCrowd --gpu-info     # exit 0: the Vulkan path would run; exit 3: here is what is missing
+```
+
+It separates the four things that can be absent - the build, the loader, the driver (ICD) and the
+device - and prints the command that fixes each. `docs/GPU.md` is the long version.
+
 ## Keyboard and mouse
 
 | Input | Action |
@@ -392,9 +401,15 @@ interactive mesh editor - not missing method.
   you the five textures, Eq. 1-12 and the LOD; the *mesh* - fall line, hem as an arc length, the
   tuck around the temple, area-weighted root density - is where the look lives, and all four of
   those are documented with the failure each one causes if you skip it.
-* **"No Vulkan driver - fix that."** No loader, no ICD, no device in this sandbox; the app detects
-  it, says so, and renders on the CPU reference rasteriser. On hardware `--gpu` takes the
-  mesh-shader path, or the compute fallback where `VK_EXT_mesh_shader` is missing.
+* **"No Vulkan driver - fix that."** Fixed as far as the repository can fix it: `--gpu-info`
+  reports which of the build / loader / driver / device is missing and what installs it, the
+  fallback message names the same verdict instead of shrugging, `tools/gpu_probe_selftest.sh`
+  tests all five verdicts against a synthetic loader, and the Linux CI GPU steps are no longer
+  wrapped in `|| true` (Windows and macOS report instead of gating - a hosted Windows runner has
+  no ICD, so a hard gate there would only test the runner). The driver itself cannot be installed in this sandbox (no route to a package
+  mirror, no PyPI/npm ICD) - `docs/GPU.md` has the checks and the install lines for a real
+  machine. On hardware `--gpu` takes the mesh-shader path, or the compute fallback where
+  `VK_EXT_mesh_shader` is missing.
 * **"Why is it slower than the paper?"** The paper's milliseconds are an RTX 4090; the counts that
   *are* comparable (storage per model, LOD fractions, strand counts) match, and `docs/COMPARISON.md`
   keeps the two columns apart on purpose.
@@ -436,6 +451,12 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
   It has not been *executed* on this machine (no Vulkan driver), so its timings come from the CI
   runs on real devices (lavapipe, MoltenVK, an Android emulator) and are copied into the table
   above by the workflow - if a row says `n/a`, that platform has not reported yet.
+* The **Vulkan diagnostics** (`--gpu-info`) *are* executed here, against a synthetic
+  `libvulkan.so.1`: `./tools/gpu_probe_selftest.sh` drives the real `src/app/gpu_probe.cpp` through
+  `ready`, `no-device`, `no-driver`, `unsupported-device` and a mixed two-device list. The CI
+  `linux` job runs that self-test, then `--gpu-info`, then the lavapipe screenshot - all three
+  ungated, so a GPU build that does not work now fails the run instead of passing quietly. The
+  `windows` and `macos` jobs upload the same report without gating on it (`vulkan-info-*`).
 * Software-renderer timings (hundreds of milliseconds per frame) are **not** the paper's GPU
   numbers and are not presented as such: they measure the algorithmic workload (strand counts,
   triangles, storage) that the GPU path produces.
@@ -453,7 +474,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | GNU Make, Release (`-O2 -g -Wall -Wextra`) | `make -j2` | 0 warnings, binary + tests |
 | CMake + Ninja, Release, `SILKCROWD_STRICT=ON` (`-Werror`) | `cmake -B build -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON && cmake --build build` | 0 warnings, 0 errors |
 | CTest | `ctest` in the build tree | **2/2** (`unit_tests`, `validation`) |
-| Unit tests | `./build/silkcrowd_tests` | **3196 checks, 0 failures** |
+| Unit tests | `./build/silkcrowd_tests` | **3234 checks, 0 failures** |
 | Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
 | Shaders | `glslang` (SPIR-V) | 10/13 compile; `hair.task`, `hair.mesh` need `glslc` (both were updated by hand in lock step with the CPU styling) |
@@ -470,9 +491,11 @@ src/render/            software reference rasteriser (same primitives as the GPU
 src/gpu/               Vulkan 1.3 context + hair renderer (task/mesh and compute paths)
 shaders/               GLSL: hair_common.glsl, hair.task, hair.mesh, hair.frag,
                        hair_compute.comp, hair_draw.vert, head.*, composite, bloom, shadow
-src/app/               CLI, scenes, asset export, Vulkan screenshot entry, Qt6 editor
-tests/                 unit tests (3196 checks)
-tools/                 README compositor and asset helpers
+src/app/               CLI, scenes, asset export, Vulkan screenshot entry, Qt6 editor,
+                       Vulkan diagnostics (gpu_probe.cpp, --gpu-info)
+tests/                 unit tests (3234 checks)
+tools/                 README compositor, asset helpers, GPU diagnostic self-test
+docs/GPU.md            Vulkan: the four things that can be missing, and how to install each
 android/               NDK + Gradle project (NativeActivity, Vulkan surface + swapchain)
 ```
 

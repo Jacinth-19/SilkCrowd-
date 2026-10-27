@@ -12,26 +12,26 @@ root slice == scalp vertices: OK
 uv-texture == root uv: OK
 w-texture monotonic: OK
 intermediate slices == Bezier control points: OK  (max error 0)
-texture eval reproduces quadratic Beziers: max error 3.07195e-08
-texture eval vs exact Catmull-Rom: max error 0.000340357
-  [PASS] depth = 1 + (numLayers-1)*4  (depth 13 for 4 layers)
+texture eval reproduces quadratic Beziers: max error 2.11556e-08
+texture eval vs exact Catmull-Rom: max error 0.000331029
+  [PASS] depth = 1 + (numLayers-1)*4  (depth 21 for 6 layers)
   [PASS] uv-texture 2D, w/u/v-textures have no intermediate slices
   [PASS] root slice == scalp vertices (bilinear within a bundle)
   [PASS] uv-texture == root uv styling coordinates
   [PASS] w-texture: w = 0 at the root, increasing to the tip
   [PASS] slice 4L+1/4L+2/4L+3 == q+, q0.5, q- (Figure 3e)
   [PASS] 2 trilinear + 1 linear reproduces the quadratic Beziers  (max error 0.000000)
-  [PASS] texture evaluation vs. exact Catmull-Rom  (max error 0.000340)
+  [PASS] texture evaluation vs. exact Catmull-Rom  (max error 0.000331)
   [PASS] updateDynamic() rebuilds the dynamic textures after a deformation
 
 == Styling coordinates (Eq. 1-4, Figures 4-5) ==
   [PASS] u_hat and v_hat are unit vectors (Eq. 1)
   [PASS] w_hat = (u x v)/||u x v|| is well defined (Eq. 4)
-  skew (|u_hat . v_hat|, preserved by design): 0.997818
-  Eq. 1-4 frames:  shared bundle edges tested: 840, max frame disagreement = 0.000690534 rad, mean disagreement = 0.000232626 rad
-  finite diffs:    shared bundle edges tested: 840, max frame disagreement = 0.408695 rad, mean disagreement = 0.183863 rad
+  skew (|u_hat . v_hat|, preserved by design): 0.999656
+  Eq. 1-4 frames:  shared bundle edges tested: 840, max frame disagreement = 0.000690534 rad, mean disagreement = 0.000214247 rad
+  finite diffs:    shared bundle edges tested: 840, max frame disagreement = 0.407173 rad, mean disagreement = 0.185539 rad
   [PASS] Eq. 1-4 frames are continuous across bundle edges (Figure 4b)  (max 0.000691 rad)
-  [PASS] finite differences are discontinuous (reproduces the Figure 4a seam)  (max 0.408695 rad)
+  [PASS] finite differences are discontinuous (reproduces the Figure 4a seam)  (max 0.407173 rad)
 
 == Hair root placement (Section 3.3, Yuksel 2015) ==
   quad set:     mean NN distance 0.0174277 (white noise 0.0110485), NN std-dev 0.00268414, range [0.00888116, 0.0264676], score 0.948783
@@ -51,19 +51,19 @@ texture eval vs exact Catmull-Rom: max error 0.000340357
   [PASS] vertex LOD is monotone in L (Eq. 9)
   [PASS] vertex count is always 2^e + 1
   [PASS] gamma in [0,1] (Eq. 12)
-  level boundary L=0.25: e 3 -> 4, gamma 0.998, even-vertex mismatch 0.00115 m
+  level boundary L=0.25: e 3 -> 4, gamma 0.998, even-vertex mismatch 0.00149 m
   [PASS] vertex LOD steps by exactly one power of two
   [PASS] Eq. 11/12 morphing keeps the rendered strand continuous across levels
   [PASS] Eq. 7 detail level falls with distance  (L(0.3m)=1.000000, L(12m)=0.049455)
 
 == Procedural styling (Section 3.4, Figure 10) ==
-  2000 strands x 33 vertices: 32.22 ms with styling, 20.06 ms without (+61%)
+  2000 strands x 33 vertices: 27.32 ms with styling, 14.31 ms without (+91%)
   [PASS] styling operations are applied after base curve generation  (cost measured above)
 
 == Hair mesh simulation (Section 4: XPBD, Wu and Yuksel 2016, Hsu 2022) ==
-  first-frame drift from the rest shape: sag-free init 0.0004 m, without 0.0008 m
-  [PASS] sag-free initialization removes the initial drop (Hsu et al. 2022)  (0.000384 m vs 0.000817 m)
-  wind 10 m/s: 0.0082 m, 20 m/s: 0.0164 m mean displacement
+  first-frame drift from the rest shape: sag-free init 0.0005 m, without 0.0254 m
+  [PASS] sag-free initialization removes the initial drop (Hsu et al. 2022)  (0.000483 m vs 0.025405 m)
+  wind 10 m/s: 0.0106 m, 20 m/s: 0.0211 m mean displacement
   [PASS] wind force model (Wu and Yuksel 2016) deflects the hair proportionally to wind speed
   [PASS] XPBD solver remains stable (no divergence)
   mean stretch error at rest: 0.00%
@@ -71,26 +71,26 @@ texture eval vs exact Catmull-Rom: max error 0.000340357
 
 == Storage (Table 1, Figure 1) ==
   preset                  verts  layers  depth  fp16 KB   fp32 KB
-  long_straight            192      4     13     91.10    182.20
-  wavy_medium              484      4     13    237.73    475.45
+  long_straight            252      6     21    188.09    376.17
+  wavy_medium              484      6     21    368.65    737.30
   curly_short              672      4     13    336.91    673.83
   afro                     780      4     13    392.98    785.95
-  bob                      520      4     13    260.91    521.81
+  bob                      572      6     21    442.21    884.42
   ponytail                 432      5     17    275.00    550.00
-  beach_waves              884      4     13    453.35    906.70
-  curly_long              1280      4     13    660.35   1320.70
+  beach_waves              884      6     21    703.02   1406.05
+  curly_long              1280      6     21   1024.02   2048.05
   pixie                    320      3      9    112.89    225.78
-  platinum_bob             720      4     13    364.41    728.81
+  blonde_layered           720      6     21    565.09   1130.19
   100 crowd models: 1.61 MB total, 14.1-19.1 KB per model (paper: 1.7 MB, 13-21 KB)
   [PASS] 100 unique hair models fit in 1.7 MB
   [PASS] per-model footprint in the paper's 13-21 KB range
 
 == Crowd workload (Figure 1) ==
-  strands: 9998570 total (no LOD) -> 2671566 rendered with LOD (26.72%), strand vertices 88161678, triangles 170980224
-  without LOD the same scene generates 329952810 strand vertices and 639908480 triangles (9.8 GB of vertex data if it had to be stored)
-  [PASS] 100 characters x ~100k unique strands  (9998570 strands)
-  [PASS] LOD removes a large part of the strand workload at the crowd distance  (100% -> 26.719481%)
-  [PASS] vertex LOD reduces the generated vertex count  (88161678 vs 329952810 vertices)
+  strands: 10000000 total (no LOD) -> 3009318 rendered with LOD (30.09%), strand vertices 99307494, triangles 192596352
+  without LOD the same scene generates 330000000 strand vertices and 640000000 triangles (9.8 GB of vertex data if it had to be stored)
+  [PASS] 100 characters x ~100k unique strands  (10000000 strands)
+  [PASS] LOD removes a large part of the strand workload at the crowd distance  (100% -> 30.093180%)
+  [PASS] vertex LOD reduces the generated vertex count  (99307494 vs 330000000 vertices)
 
 =====================================================================
 checks passed: 40, failed: 0

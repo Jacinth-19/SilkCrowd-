@@ -73,31 +73,54 @@ it changes the image more than the equations do.
 
 ## 3. "No Vulkan driver — fix that."
 
-There is no Vulkan driver **in this sandbox**, and that is not fixable from inside it:
+It is fixed as far as it can be fixed *from inside this repository*: the failure is no longer
+silent, it is classified, it is self-tested, and CI now refuses to pass when the GPU path does
+not work. The driver itself cannot be installed here — see `docs/GPU.md` for the full story.
+
+**Why it cannot be installed here.** No network route to a package mirror, and:
 
 ```
-$ ls /usr/lib/x86_64-linux-gnu/libvulkan*      -> nothing
-$ ls /usr/share/vulkan/icd.d                   -> nothing
+$ ls /usr/lib/x86_64-linux-gnu/libvulkan*      -> nothing   (no loader)
+$ ls /usr/share/vulkan/icd.d                   -> nothing   (no ICD manifest)
+$ ls /usr/include/vulkan                       -> nothing   (no headers, so no GPU build)
 $ apt-get install mesa-vulkan-drivers          -> package not in the index
 ```
 
-No loader, no ICD (the driver manifest a loader needs), no GPU device node. The application
-therefore probes for Vulkan at start-up and, when it is missing, prints
+A software ICD was looked for where the sandbox *can* reach: PyPI's `vulkan` package is Python
+bindings only (no `libvulkan.so`), and `vulkan-loader`, `lavapipe`, `swiftshader`,
+`mesa-vulkan-drivers` are all absent from PyPI; npm has no ICD package. Even a driver dropped
+into `/tmp` would not survive the sandbox, so the honest fix is the diagnosis, not a binary.
+
+**What changed.** `SilkCrowd --gpu-info` names the *first* missing piece - the build, the
+loader, the driver (ICD) or the device - and prints the exact command that fixes it:
 
 ```
-Vulkan path unavailable (this build has no Vulkan support (configure with -DVulkan_FOUND ...));
-falling back to the software renderer
+$ ./build/SilkCrowd --gpu-info
+  build            SILKCROWD_WITH_VULKAN undefined (CMake did not find libvulkan)
+  loader           not found (tried libvulkan.so.1, libvulkan.so)
+  driver (ICD)     no manifest found (searched /usr/share/vulkan/icd.d, ...)
+  device           not queried (no usable loader/driver)
+  verdict          build-without-vulkan - this build has no Vulkan renderer
+  remedy           sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers glslang-tools ...
+  remedy           the software rasteriser needs no driver at all: SilkCrowd --software
 ```
 
-and renders the frame with `src/render/software_renderer.cpp`, which is a full CPU
-implementation of the same pipeline (same texture layout, same LOD, same shading model,
-same self-shadow buffer) — that is why every image in `docs/` is real and reproducible here.
+Exit code 0 means the Vulkan path would run; 3 means it would not. `--gpu` now prints the
+verdict as well before falling back, so "no driver" and "built without Vulkan" — which used to
+print nearly the same sentence — can no longer be confused. `tools/gpu_probe_selftest.sh`
+builds a synthetic `libvulkan.so.1` and checks all five verdicts against the real probe code,
+so the diagnostic itself is tested here; `docs/GPU.md` documents the whole thing.
 
-On any machine with a Vulkan 1.3 driver (Mesa RADV/ANV, NVIDIA, AMD, Intel), `--gpu` uses
-the mesh-shader path; devices without `VK_EXT_mesh_shader` take the compute fallback
-described in `docs/PAPER_MAPPING.md` §7. CI installs `mesa-vulkan-drivers` and runs
-`--gpu --frames 2` when the runner provides a device; the job is allowed to skip, because
-GitHub's hosted runners have no GPU.
+The frame is then rendered by `src/render/software_renderer.cpp`, a full CPU implementation of
+the same pipeline (same texture layout, same LOD, same shading model, same self-shadow
+buffer) — that is why every image in `docs/` is real and reproducible in this sandbox.
+
+**On hardware.** With a Vulkan 1.3 driver (Mesa lavapipe/RADV/ANV, NVIDIA, AMD, Intel) `--gpu`
+takes the mesh-shader path; devices without `VK_EXT_mesh_shader` take the compute fallback
+described in `docs/PAPER_MAPPING.md` §7. The CI `linux` job installs `mesa-vulkan-drivers`
+(lavapipe), runs `--gpu-info` and **fails** if the verdict is not `ready`, then renders the
+headless Vulkan screenshot — also unguarded now. Before this change that step ended in
+`|| true` with a hard-coded ICD filename, so a broken GPU build could hide behind a green run.
 
 ---
 

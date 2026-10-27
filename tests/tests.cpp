@@ -7,6 +7,7 @@
 
 #include "silkcrowd/assets.h"
 #include "silkcrowd/catmull_rom.h"
+#include "silkcrowd/gpu_diag.h"
 #include "silkcrowd/hair_mesh_texture.h"
 #include "silkcrowd/lod.h"
 #include "silkcrowd/renderer.h"
@@ -332,6 +333,120 @@ void testTriangleBundle() {
     CHECK(tex.validate(mesh, TexelFormat::Float32).rootSliceMatchesMesh);
 }
 
+void testGpuDiagnostics() {
+    std::printf("gpu diagnostics\n");
+    // ---- ICD manifest parsing ------------------------------------------------------------
+    // Real lavapipe manifest, plus the Windows-style escaped separators MoltenVK writes.
+    const std::string lvp =
+        "{\n    \"file_format_version\": \"1.0.0\",\n    \"ICD\": {\n"
+        "        \"library_path\": \"libvulkan_lvp.so\",\n"
+        "        \"api_version\": \"1.3.289\"\n    }\n}\n";
+    CHECK(jsonStringField(lvp, "library_path") == "libvulkan_lvp.so");
+    CHECK(jsonStringField(lvp, "api_version") == "1.3.289");
+    CHECK(jsonStringField(lvp, "file_format_version") == "1.0.0");
+    CHECK(jsonStringField(lvp, "missing_key").empty());
+    // The key must be a key: a *value* that happens to equal it is not a match.
+    CHECK(jsonStringField("{\"a\": \"library_path\"}", "library_path") != "library_path");
+    // Raw strings so the manifest text is exactly what a driver writes on disk.
+    CHECK(jsonStringField(R"({"library_path": "C:\\Vulkan\\.\\vk_swiftshader.dll"})", "library_path") ==
+          R"(C:\Vulkan\.\vk_swiftshader.dll)");
+    // Non-string values are rejected instead of being reported as a path.
+    CHECK(jsonStringField("{\"library_path\": 42}", "library_path").empty());
+
+    // ---- path resolution ----------------------------------------------------------------
+    CHECK(resolveIcdLibraryPath("/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "libvulkan_lvp.so") ==
+          "/usr/share/vulkan/icd.d/libvulkan_lvp.so");
+    CHECK(resolveIcdLibraryPath("/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+                                "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so") ==
+          "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so");
+    CHECK(resolveIcdLibraryPath("lvp_icd.x86_64.json", "libvulkan_lvp.so") == "libvulkan_lvp.so");
+    CHECK(resolveIcdLibraryPath("/etc/vulkan/icd.d/x.json", "").empty());
+    CHECK(parentDirectory("/a/b/c.json") == "/a/b");
+    CHECK(parentDirectory("c.json").empty());
+    CHECK(parentDirectory("/c.json") == "/");
+    const std::vector<std::string> list = splitPathList("/a/x.json::/b/y.json");
+    CHECK(list.size() == 2u && list[0] == "/a/x.json" && list[1] == "/b/y.json");
+    CHECK(splitPathList("").empty());
+
+    // ---- classification: the first blocker wins, in app order ---------------------------
+    GpuFacts f;
+    CHECK(classify(f) == GpuIssue::BuiltWithoutVulkan);
+
+    // Built without Vulkan stays BuiltWithoutVulkan even when the machine is fully equipped:
+    // the fix there is a rebuild, not a driver install.
+    f.loaderFound = true;
+    f.icdLibraries.push_back("/usr/lib/libvulkan_lvp.so");
+    CHECK(classify(f) == GpuIssue::BuiltWithoutVulkan);
+
+    f.builtWithVulkan = true;
+    f.loaderFound = false;
+    CHECK(classify(f) == GpuIssue::NoLoader);
+
+    f.loaderFound = true;
+    f.icdLibraries.clear();
+    CHECK(classify(f) == GpuIssue::NoDriver);
+    f.icdMissing.push_back("/usr/lib/libvulkan_lvp.so");  // manifest, but the .so is gone
+    CHECK(classify(f) == GpuIssue::NoDriver);
+
+    f.icdLibraries.push_back("/usr/lib/libvulkan_lvp.so");
+    f.icdMissing.clear();
+    // A manifest on disk is not enough: without an instance no driver answered, which is the
+    // "no driver" case and not "no device".
+    CHECK(classify(f) == GpuIssue::NoDriver);
+    f.instanceCreated = true;
+    CHECK(classify(f) == GpuIssue::NoDevice);  // a driver answered, but nothing enumerated
+    f.deviceEnumerated = true;
+    CHECK(classify(f) == GpuIssue::NoDevice);  // the loader answered, with an empty list
+
+    // A device that enumerated outranks the manifest bookkeeping: SDK/container drivers exist
+    // outside /usr/share/vulkan/icd.d, and a working device must never be called "no driver".
+    GpuFacts unlisted;
+    unlisted.builtWithVulkan = true;
+    unlisted.loaderFound = true;
+    unlisted.instanceCreated = true;
+    unlisted.deviceEnumerated = true;
+    unlisted.deviceLines.push_back("llvmpipe [cpu] api 1.3.289");
+    unlisted.deviceUsable = true;
+    CHECK(classify(unlisted) == GpuIssue::Ready);
+
+    f.deviceLines.push_back("llvmpipe [cpu] api 1.3.289");
+    f.deviceUsable = false;
+    CHECK(classify(f) == GpuIssue::UnsupportedDevice);
+    f.deviceUsable = true;
+    f.deviceName = "llvmpipe (LLVM 17.0.6, 256 bits)";
+    CHECK(classify(f) == GpuIssue::Ready);
+    CHECK(std::string(gpuIssueName(classify(f))) == "ready");
+
+    // ---- report: names every stage, and always mentions the software fallback -----------
+    const std::vector<std::string> ready = gpuReportLines(f);
+    std::string readyText;
+    for (const std::string& line : ready) readyText += line + "\n";
+    CHECK(readyText.find("SilkCrowd Vulkan diagnostics") != std::string::npos);
+    CHECK(readyText.find("llvmpipe (LLVM 17.0.6, 256 bits)") != std::string::npos);
+    CHECK(readyText.find("verdict") != std::string::npos);
+
+    GpuFacts bare;  // this sandbox: no Vulkan build, no loader, no ICD
+    bare.loaderCandidates = {"libvulkan.so.1", "libvulkan.so"};
+    bare.icdSearchDirs = {"/usr/share/vulkan/icd.d"};
+    std::string bareText;
+    for (const std::string& line : gpuReportLines(bare)) bareText += line + "\n";
+    CHECK(bareText.find("SILKCROWD_WITH_VULKAN undefined") != std::string::npos);
+    CHECK(bareText.find("libvulkan.so.1") != std::string::npos);       // what was tried
+    CHECK(bareText.find("/usr/share/vulkan/icd.d") != std::string::npos);
+    CHECK(bareText.find("no-loader") != std::string::npos ||
+          bareText.find("build-without-vulkan") != std::string::npos);
+    CHECK(bareText.find("--software") != std::string::npos);
+    CHECK(gpuHeadline(bare).find("no Vulkan renderer") != std::string::npos);
+
+    // A machine that *has* the loader and a driver in a Vulkan-less build must say so, so
+    // that "install a driver" and "rebuild" are never confused again.
+    GpuFacts rebuildable;
+    rebuildable.loaderFound = true;
+    rebuildable.loaderPath = "libvulkan.so.1";
+    rebuildable.icdLibraries.push_back("/usr/lib/libvulkan_lvp.so");
+    CHECK(gpuHeadline(rebuildable).find("rebuilding enables it") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -343,6 +458,7 @@ int main() {
     testLod();
     testStrandGeneration();
     testTriangleBundle();
+    testGpuDiagnostics();
     std::printf("====================\n%d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
 }

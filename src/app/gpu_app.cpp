@@ -100,9 +100,10 @@ int runGpuScreenshot(const GpuAppOptions& o, std::string* error) {
 #else  // !SILKCROWD_WITH_VULKAN
 
 int runGpuScreenshot(const GpuAppOptions&, std::string* error) {
+    // Not a driver problem: this binary was configured without libvulkan headers, so the
+    // renderer is not in it at all. --gpu-info reports whether the *machine* could run one.
     if (error)
-        *error = "this build has no Vulkan support (configure with -DVulkan_FOUND or install "
-                 "the Vulkan SDK); rerun with --software";
+        *error = "built without Vulkan";
     return 2;
 }
 

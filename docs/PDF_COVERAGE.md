@@ -52,7 +52,7 @@ are blocked by the sandbox rather than by the code (no Vulkan driver, no GPU).
 | 3.1 | **Table 1**: hair-mesh texture (3D, 4 components) | DONE | `HairMeshTextureSet::buildHairMeshTexture()`; `--validate` checks the layout |
 | 3.2 | **Table 1**: uv-texture (2D) | DONE | `buildUvTexture()` |
 | 3.3 | **Table 1**: u-, v-, w-textures (3D) | DONE | `buildUVWTextures()`; w-texture is static |
-| 3.4 | `hair_mesh_texture.h` is the *only* texture/storage type | DONE | nothing else in `include/` stores per-strand data; 3196 test checks assert the layout invariants |
+| 3.4 | `hair_mesh_texture.h` is the *only* texture/storage type | DONE | nothing else in `include/` stores per-strand data; 3234 test checks assert the layout invariants |
 | 3.5 | **Figure 3e**: three intermediate slices between consecutive layers | DONE | `sliceForLayer()` / `blockToSlice()`; depth `1 + (L-1)*4`; validated numerically |
 | 3.6 | Two trilinear fetches + one linear fetch per strand segment | DONE | `shaders/hair_common.glsl`; `--validate` reproduces a piecewise-cubic curve from the fetches |
 | 3.7 | 2×2 block packing of bundles, 4×4 texels per bundle per slice | DONE | `blocksX * 2 * 4` texture width; validated |
@@ -171,7 +171,7 @@ These are the only items the PDF asks for that this repository does **not** deli
 
 | # | Item | Why | Next step |
 | --- | --- | --- | --- |
-| 13.1 | Running the Vulkan path in this sandbox | There is no Vulkan loader, no ICD and no GPU here (`libvulkan*` absent, no `/usr/share/vulkan/icd.d`, `mesa-vulkan-drivers` not in the apt index). The application detects this and falls back to the software renderer with a message instead of failing | run `SilkCrowd --gpu` on any machine with a Vulkan 1.3 driver; the CI job installs `mesa-vulkan-drivers` and runs `--gpu --frames 2` when it is available |
+| 13.1 | Running the Vulkan path in this sandbox | There is no Vulkan loader, no ICD, no headers and no GPU here (`libvulkan*` absent, no `/usr/share/vulkan/icd.d`, `mesa-vulkan-drivers` not in the apt index, and no PyPI/npm package ships an ICD). `SilkCrowd --gpu-info` now names which of build / loader / driver / device is missing and what installs it, `tools/gpu_probe_selftest.sh` tests all five verdicts against a synthetic loader, and the CI GPU steps fail the job instead of being wrapped in `|| true` (see `docs/GPU.md`) | run `SilkCrowd --gpu-info` then `SilkCrowd --gpu` on any machine with a Vulkan 1.3 driver; the CI `linux` job does exactly that with lavapipe |
 | 13.2 | Validating the GLSL | no `glslangValidator`/`glslc` in the image, so the shaders compile only in CI (job `shaders`, which installs `glslang-tools`) | add shader compilation to the local build once a validator is available |
 | 13.3 | Absolute GPU timings (2 ms, 1.8 ms for teapots, 47 ms no-LOD) | no GPU | re-measure with `--bench` on the reference hardware |
 | 13.4 | 3.2 MB of texture storage for 200 teapots | our per-bundle block allocation is fixed-size; packing more bundles per block needs a variable-size block layout | extend `HairMeshTextureSet` with a size class per bundle |
@@ -184,7 +184,7 @@ These are the only items the PDF asks for that this repository does **not** deli
 
 | Evidence | Command |
 | --- | --- |
-| 3196 unit/integration checks | `./build/silkcrowd_tests` |
+| 3234 unit/integration checks | `./build/silkcrowd_tests` |
 | 40 paper-critical invariants (slices, frames, Eq. 7–12, blue noise, texture layout) | `./build/SilkCrowd --validate` |
 | Storage per model, 100-model total | `./build/SilkCrowd --assets --scene crowd --crowd 100` |
 | LOD vs no LOD | `./build/SilkCrowd --bench --scene crowd --crowd 100 [--no-lod]` |
