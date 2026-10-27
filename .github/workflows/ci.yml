@@ -199,6 +199,20 @@ jobs:
               ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
             exit 1
           }
+      - name: Put the Vulkan loader next to the executable
+        # The SDK installs the runtime but may leave vulkan-1.dll outside Bin (and outside
+        # System32), so the linked binary cannot start (0xC0000135). Find it once and copy it
+        # beside the executable - that also mirrors what CMake does when it can see it.
+        run: |
+          $roots = @("$env:VULKAN_SDK", "C:\VulkanSDK", "C:\Windows\System32")
+          $dll = Get-ChildItem -Path $roots -Filter vulkan-1.dll -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName build/Release/vulkan-1.dll -Force
+            Write-Output "::error::copied $($dll.FullName)"
+          } else {
+            Write-Output "::error::vulkan-1.dll was not found under $($roots -join ', ')"
+          }
       - name: Smoke test (which DLL is missing, if any)
         # A 0xC0000135 exit means the loader could not find a dependency and Windows prints
         # nothing at all, so every finding is emitted as an annotation (the only channel that

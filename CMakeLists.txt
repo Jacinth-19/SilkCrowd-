@@ -199,15 +199,29 @@ if(WIN32 AND Vulkan_FOUND)
   # The Vulkan loader is an import library at link time and a DLL at run time; a machine
   # without it in PATH fails with STATUS_DLL_NOT_FOUND (0xC0000135) before main(). Copy the
   # loader next to the executable so a build from this tree always runs.
-  foreach(dir "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+  # The SDK does not always keep the loader in Bin, so look there first and then anywhere
+  # under VULKAN_SDK.
+  set(SILKCROWD_VULKAN_DLL "")
+  foreach(dir "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}")
     if(EXISTS "${dir}/vulkan-1.dll")
-      add_custom_command(TARGET SilkCrowd POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${dir}/vulkan-1.dll" $<TARGET_FILE_DIR:SilkCrowd>/vulkan-1.dll
-        COMMENT "Copying the Vulkan loader next to the executable")
+      set(SILKCROWD_VULKAN_DLL "${dir}/vulkan-1.dll")
       break()
     endif()
   endforeach()
+  if(NOT SILKCROWD_VULKAN_DLL AND DEFINED ENV{VULKAN_SDK})
+    file(GLOB_RECURSE SILKCROWD_VULKAN_DLL_CANDIDATES "$ENV{VULKAN_SDK}/*/vulkan-1.dll")
+    list(LENGTH SILKCROWD_VULKAN_DLL_CANDIDATES _n)
+    if(_n GREATER 0)
+      list(GET SILKCROWD_VULKAN_DLL_CANDIDATES 0 SILKCROWD_VULKAN_DLL)
+    endif()
+  endif()
+  if(SILKCROWD_VULKAN_DLL)
+    message(STATUS "Vulkan loader for the run-time copy: ${SILKCROWD_VULKAN_DLL}")
+    add_custom_command(TARGET SilkCrowd POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${SILKCROWD_VULKAN_DLL}" $<TARGET_FILE_DIR:SilkCrowd>/vulkan-1.dll
+      COMMENT "Copying the Vulkan loader next to the executable")
+  endif()
 endif()
 
 if(SILKCROWD_BUILD_TESTS)
