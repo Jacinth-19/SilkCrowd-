@@ -493,19 +493,28 @@ jobs:
         # so the run here would only ever test the runner. What this step does prove: the APK
         # contains the NDK library for both ABIs and the compiled shaders, i.e. the whole
         # Android pipeline (CMake + NDK + glslc + Gradle + NativeActivity) built end to end.
+        # python3 rather than unzip: it is always there, and it fails loudly.
         run: |
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
-          ls -l "$APK"
           mkdir -p artifacts
-          unzip -l "$APK" | tee artifacts/apk_contents.txt
-          for entry in lib/arm64-v8a/libsilkcrowd.so lib/x86_64/libsilkcrowd.so \
-                       assets/shaders/hair.task.spv assets/shaders/hair.mesh.spv; do
-            if ! grep -q "$entry" artifacts/apk_contents.txt; then
-              echo "::error::the APK is missing $entry"
-              exit 1
-            fi
-            echo "::notice::present: $entry"
-          done
+          python3 - <<'PY'
+          import sys, zipfile, pathlib
+          apk = pathlib.Path("android/app/build/outputs/apk/debug/app-debug.apk")
+          print("apk:", apk, apk.stat().st_size, "bytes")
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+          pathlib.Path("artifacts/apk_contents.txt").write_text("\n".join(names) + "\n")
+          for name in names:
+              if name.endswith((".so", ".spv")):
+                  print(" ", name)
+          required = ["lib/arm64-v8a/libsilkcrowd.so", "lib/x86_64/libsilkcrowd.so",
+                      "assets/shaders/hair.task.spv", "assets/shaders/hair.mesh.spv",
+                      "assets/shaders/hair.frag.spv"]
+          missing = [r for r in required if r not in names]
+          if missing:
+              print("::error::the APK is missing " + ", ".join(missing))
+              sys.exit(1)
+          print("::notice::the APK contains both ABIs and all " + str(len(required)) + " required entries")
+          PY
       - name: Upload the APK listing
         if: always()
         uses: actions/upload-artifact@v4
