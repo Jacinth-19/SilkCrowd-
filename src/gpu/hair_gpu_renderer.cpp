@@ -518,23 +518,8 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
         vkUpdateDescriptorSets(dev, 1, &bw, 0, nullptr);
     }
 
-    // ---- TAA resolve layout: current colour, history, uniforms ----
+    // ---- TAA resolve pipeline layout (its descriptor set layout is created above) ----
     {
-        VkDescriptorSetLayoutBinding b[3]{};
-        for (int i = 0; i < 2; ++i) {
-            b[i].binding = static_cast<uint32_t>(i);
-            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            b[i].descriptorCount = 1;
-            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        }
-        b[2].binding = 2;
-        b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        b[2].descriptorCount = 1;
-        b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 3;
-        lci.pBindings = b;
-        SILK_VK_CHECK(vkCreateDescriptorSetLayout(dev, &lci, nullptr, &taaLayout_));
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         pc.size = 16;
@@ -559,23 +544,9 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
         ci.pPushConstantRanges = &pc;
         SILK_VK_CHECK(vkCreatePipelineLayout(dev, &ci, nullptr, &headPipelineLayout_));
     }
-    // ---- composite layout: hdr colour + bloom + camera UBO ----
+    // ---- composite pipeline layout (the descriptor set layout is created in
+    // createDescriptorLayouts(), because the composite set is allocated earlier) ----
     {
-        VkDescriptorSetLayoutBinding b[3]{};
-        for (int i = 0; i < 2; ++i) {
-            b[i].binding = static_cast<uint32_t>(i);
-            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            b[i].descriptorCount = 1;
-            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        }
-        b[2].binding = 2;
-        b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        b[2].descriptorCount = 1;
-        b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 3;
-        lci.pBindings = b;
-        SILK_VK_CHECK(vkCreateDescriptorSetLayout(dev, &lci, nullptr, &compositeLayout_));
 
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -587,18 +558,7 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
         ci.pPushConstantRanges = &pc;
         SILK_VK_CHECK(vkCreatePipelineLayout(dev, &ci, nullptr, &compositePipelineLayout_));
     }
-    // ---- bloom layout: single input image ----
-    {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0;
-        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1;
-        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 1;
-        lci.pBindings = &b;
-        SILK_VK_CHECK(vkCreateDescriptorSetLayout(dev, &lci, nullptr, &bloomLayout_));
-    }
+    // bloomLayout_ is created in createDescriptorLayouts() as well.
     // ---- compute-fallback draw layout (vertex shader reads the SSBOs) ----
     {
         VkPushConstantRange pc{};
@@ -1894,12 +1854,55 @@ bool HairGpuRenderer::createDescriptorLayouts(std::string* error) {
         if (!make(b, &hairTextureLayout_, "hair texture")) return false;
     }
 
-    // A null layout here reaches vkAllocateDescriptorSets and then the driver's pipeline
-    // creation, where lavapipe segfaults instead of reporting anything useful.
+    // set 5: post-process composite (HDR colour + bloom + uniforms).
+    {
+        VkDescriptorSetLayoutBinding b[3]{};
+        for (int i = 0; i < 2; ++i) {
+            b[i].binding = static_cast<uint32_t>(i);
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        b[2].binding = 2;
+        b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[2].descriptorCount = 1;
+        b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (!make({b[0], b[1], b[2]}, &compositeLayout_, "composite")) return false;
+    }
+    // set 6: bloom (single input image).
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1;
+        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (!make({b}, &bloomLayout_, "bloom")) return false;
+    }
+    // set 7: TAA resolve (current colour, history, uniforms).
+    {
+        VkDescriptorSetLayoutBinding b[3]{};
+        for (int i = 0; i < 2; ++i) {
+            b[i].binding = static_cast<uint32_t>(i);
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        b[2].binding = 2;
+        b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[2].descriptorCount = 1;
+        b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        if (!make({b[0], b[1], b[2]}, &taaLayout_, "taa")) return false;
+    }
+
+    // The composite/bloom/TAA layouts used to be created inside createPipelines(), after the
+    // descriptor sets that use them had already been allocated - so those sets were allocated
+    // against VK_NULL_HANDLE layouts. Validation reported it and lavapipe segfaulted later, in
+    // vkCreateGraphicsPipelines. Every layout now lives here, and every one is checked.
     const std::pair<const char*, VkDescriptorSetLayout> required[] = {
         {"frame", frameLayout_},         {"model", modelLayout_},
         {"bundle", bundleLayout_},       {"sample/output", sampleLayout_},
-        {"hair texture", hairTextureLayout_}};
+        {"hair texture", hairTextureLayout_}, {"composite", compositeLayout_},
+        {"bloom", bloomLayout_},         {"taa", taaLayout_}};
     for (const auto& layout : required) {
         if (layout.second == VK_NULL_HANDLE) {
             if (error) *error = std::string("descriptor layout missing: ") + layout.first;
