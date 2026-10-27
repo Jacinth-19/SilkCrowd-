@@ -199,6 +199,20 @@ jobs:
               ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
             exit 1
           }
+      - name: Smoke test (which DLL is missing, if any)
+        # A 0xC0000135 exit means the loader could not find a dependency, and Windows prints
+        # nothing at all in that case - so this step names the players instead of guessing.
+        run: |
+          Get-ChildItem build/Release | Select-Object Name, Length | Format-Table | Out-String | Write-Output
+          Write-Output "VULKAN_SDK=$env:VULKAN_SDK"
+          where.exe vulkan-1.dll 2>$null | ForEach-Object { Write-Output "found: $_" }
+          foreach ($p in @("$env:WINDIR\System32\vulkan-1.dll", "build/Release/vulkan-1.dll")) {
+            Write-Output "$p exists: $(Test-Path $p)"
+          }
+          & ./build/Release/SilkCrowd.exe --help *>&1 | Select-Object -First 3 | Write-Output
+          $rc = $LASTEXITCODE
+          Write-Output "smoke exit code: $rc (0x$('{0:X}' -f $rc))"
+          if ($rc -eq -1073741515) { Write-Output "::error::a dependency DLL is missing (0xC0000135)" }
       - name: Validation suite
         run: |
           build/Release/SilkCrowd.exe --validate --report docs/validation_report.txt *>&1 |
