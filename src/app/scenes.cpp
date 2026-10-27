@@ -128,8 +128,11 @@ Camera headCamera(int width, int height, float fovYDeg) {
     // Framed for the scanned bust, which is 21 cm from crown to chin and ~7 cm wider than
     // the parametric head across the shoulders: the head fills the frame from the collarbone
     // up, with a little air above the hair.
-    c.position = Vec3(0.300f, 0.082f, 0.665f);
-    c.target = Vec3(0.004f, -0.068f, 0.0f);
+    // A little further back and aimed a touch higher than the tightest fit: at 1:1 and 4:5
+    // the head fills the frame, but a square frame (the style grid) cropped the top of the
+    // hair, and hair that touches the border reads as a bad crop rather than as a style.
+    c.position = Vec3(0.306f, 0.086f, 0.700f);
+    c.target = Vec3(0.004f, -0.052f, 0.0f);
     c.nearZ = 0.05f;
     return c;
 }
