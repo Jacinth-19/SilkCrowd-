@@ -19,6 +19,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# -----------------------------------------------------------------------------
+#  Warning flags. Defined early because the target definitions below use them.
+#  Vulkan's C API is initialised the C way (`VkImageViewCreateInfo
+#  ci{VK_STRUCTURE_TYPE_...};` then field by field); GCC's
+#  -Wmissing-field-initializers flags every such line, which turned an ordinary
+#  Vulkan idiom into a -Werror failure on the Linux job. It is off only for the
+#  targets that touch Vulkan structs.
+# -----------------------------------------------------------------------------
+if(MSVC)
+  set(SILKCROWD_WARN_FLAGS /W3 /permissive-)
+  set(SILKCROWD_VULKAN_STRUCT_FLAGS)
+  # The strict gate is the GCC/Clang CI jobs: /W4 + /WX on a codebase that had
+  # never been compiled by MSVC would fail on unrelated warnings, hiding real ones.
+else()
+  set(SILKCROWD_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter)
+  set(SILKCROWD_VULKAN_STRUCT_FLAGS -Wno-missing-field-initializers)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -118,8 +136,8 @@ if(Vulkan_FOUND)
     src/gpu/hair_gpu_renderer.cpp)
   target_link_libraries(silkcrowd_gpu PUBLIC silkcrowd_core Vulkan::Vulkan)
   target_include_directories(silkcrowd_gpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_compile_options(silkcrowd_gpu PRIVATE -Wall -Wextra -Wno-unused-parameter
-                          -Wno-missing-field-initializers)
+  target_compile_options(silkcrowd_gpu PRIVATE ${SILKCROWD_WARN_FLAGS}
+                          ${SILKCROWD_VULKAN_STRUCT_FLAGS})
   target_compile_definitions(silkcrowd_gpu PUBLIC
     SILKCROWD_WITH_VULKAN=1
     SILKCROWD_SHADER_DIR="${SILKCROWD_SHADER_OUT}")
@@ -159,6 +177,7 @@ add_executable(SilkCrowd
 # ${CMAKE_DL_LIBS} carries -ldl on Linux: gpu_probe.cpp dlopen()s the Vulkan loader so the
 # diagnostic also works in a build that has no Vulkan headers at all.
 target_link_libraries(SilkCrowd PRIVATE silkcrowd_core ${CMAKE_DL_LIBS})
+target_compile_options(SilkCrowd PRIVATE ${SILKCROWD_VULKAN_STRUCT_FLAGS})
 if(SILKCROWD_GPU_SOURCES)
   set_target_properties(SilkCrowd PROPERTIES CXX_STANDARD 17)
   target_link_libraries(SilkCrowd PRIVATE ${SILKCROWD_GPU_SOURCES})
@@ -196,9 +215,13 @@ install(DIRECTORY assets/ DESTINATION bin/assets)
 set(SILKCROWD_WARNING_TARGETS SilkCrowd silkcrowd_core silkcrowd_gpu silkcrowd_tests)
 foreach(tgt IN LISTS SILKCROWD_WARNING_TARGETS)
   if(TARGET ${tgt})
-    target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_compile_options(${tgt} PRIVATE ${SILKCROWD_WARN_FLAGS})
     if(SILKCROWD_STRICT)
-      target_compile_options(${tgt} PRIVATE -Werror)
+      if(MSVC)
+        target_compile_options(${tgt} PRIVATE /WX)
+      else()
+        target_compile_options(${tgt} PRIVATE -Werror)
+      endif()
     endif()
   endif()
 endforeach()
