@@ -1,0 +1,7 @@
+cmake
+ninja
+vulkan-headers
+vulkan-loader
+molten-vk
+glslang
+shaderc

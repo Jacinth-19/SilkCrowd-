@@ -1,0 +1,10 @@
+build-essential
+cmake
+ninja-build
+ccache
+libvulkan-dev
+vulkan-tools
+mesa-vulkan-drivers
+glslang-tools
+qt6-base-dev
+libqt6opengl6-dev

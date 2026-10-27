@@ -1,0 +1,624 @@
+name: CI
+
+# SilkCrowd is validated on every platform the paper's authors could plausibly run it on.
+#   linux      Mesa lavapipe software Vulkan (no GPU needed); every GPU step is gated by
+#              `SilkCrowd --gpu-info`, so a missing loader/driver fails the job instead of
+#              silently rendering with the software rasteriser
+#   windows    Vulkan SDK from LunarG + the software rasteriser fallback
+#   macos      MoltenVK through the Vulkan loader from Homebrew
+#   ios        MoltenVK on an iOS simulator (build only: simulation is headless)
+#   android    NDK build of the APK + a check that both ABIs and the shaders are in it
+#              (the on-device run needs KVM; see docs/GPU.md for the manual command)
+#   update-readme  composites the per-platform screenshots into the README table
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (lavapipe)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # ---- caches ------------------------------------------------------------------
+      # Three layers, because a from-scratch Linux run spends most of its wall clock in
+      # apt and in the compiler, not in the tests:
+      #   * the downloaded .deb files, keyed on the package list (a dependency change is
+      #     the only thing that should invalidate it);
+      #   * ccache, keyed on the sources, with a fallback key so a source change still
+      #     gets a warm cache and only recompiles what changed;
+      #   * the Qt/Vulkan build products come out of ccache, so nothing else is needed.
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-packages.txt') }}
+          restore-keys: apt-${{ runner.os }}-
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          # --no-install-recommends keeps the archive small enough to cache usefully.
+          xargs -a .github/apt-packages.txt sudo apt-get install -y --no-install-recommends
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        # -DSILKCROWD_STRICT=ON turns -Wall -Wextra into -Werror for every target.
+        run: |
+          ccache --max-size=1.5G
+          ccache --zero-stats
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        # The failure has to be readable from the job summary too: a compile error is the one
+        # thing you cannot debug from the step list, and the run log is not always reachable.
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            {
+              echo '### Build failed'
+              echo '```'
+              tail -n 120 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Annotations are the only part of a failure that is always readable through the
+            # API, so the actual compiler errors are re-emitted as error annotations too.
+            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+      - name: ccache statistics
+        run: ccache --show-stats
+      - name: Validation suite
+        run: |
+          if ! ./build/SilkCrowd --validate --report docs/validation_report.txt | tee validate.log; then
+            grep -E "FAIL|RESULT" validate.log | head -12 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+      - name: Unit tests
+        run: ./build/silkcrowd_tests
+      - name: Baked blue-noise assets are reproducible
+        # `--bake-noise` must rewrite exactly the files that are checked in: if the generator or
+        # the file format ever drifts from `assets/noise/`, this fails instead of silently
+        # redistributing every hair root in the scene. `--validate` asserts the contents match
+        # the generator bit for bit; this asserts the bytes on disk are current.
+        run: |
+          ./build/SilkCrowd --bake-noise
+          if [ -n "$(git status --porcelain assets/noise)" ]; then
+            git status --porcelain assets/noise
+            echo "::error::assets/noise is stale - commit the output of --bake-noise"
+            exit 1
+          fi
+      - name: CPU budget (the paper's per-frame work, phase by phase)
+        # Records the numbers docs/CPU_2MS.md talks about on the runner that builds this
+        # commit, so a regression in the fast path shows up as a number, not as a hunch. The
+        # scene is deliberately small: this is a smoke test of the phases, not a benchmark
+        # record (the runner is shared and its timing is noisy).
+        run: |
+          ./build/SilkCrowd --cpu-budget --scene crowd --crowd 12 --width 480 --height 270             --repeat 1 --front-end-only | tee cpu_budget_frontend.txt
+          ./build/SilkCrowd --cpu-budget --scene head --width 480 --height 270 --repeat 1             | tee cpu_budget_head.txt
+      - name: Vulkan diagnostics self-test
+        # Proves the diagnostic itself tells four states apart (ready / no-device / no-driver
+        # / unsupported-device) against a synthetic loader, so `--gpu-info` cannot be the
+        # thing that is wrong on a machine where the GPU path fails.
+        run: ./tools/gpu_probe_selftest.sh
+      - name: Vulkan diagnostics
+        # --gpu-info exits 0 only when the Vulkan path would actually run here, and its report
+        # names the first missing piece (build / loader / driver / device). Writing the report
+        # to a file first keeps the exit code: a `| tee` would swallow it.
+        run: |
+          mkdir -p artifacts
+          ./build/SilkCrowd --gpu-info > artifacts/gpu_info.txt
+          cat artifacts/gpu_info.txt
+      - name: Headless render (Vulkan, lavapipe)
+        # No VK_ICD_FILENAMES override (the loader finds lavapipe itself) and no `|| true`:
+        # this step used to "pass" while the GPU path was failing, which is how a driver crash
+        # could hide behind a green run. 320x200 / 4k strands / one frame keeps it inside a CI
+        # budget - lavapipe is a CPU Vulkan driver, and the point is that the path runs.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir -p artifacts
+          sudo apt-get install -y --no-install-recommends vulkan-validationlayers >/dev/null 2>&1 || true
+          RENDER="./build/SilkCrowd --scene head --style 0 --strands 4000 \
+                  --width 320 --height 200 --frames 1 --headless"
+          if timeout 240 $RENDER --validation --screenshot artifacts/linux_vulkan.png \
+               > render.log 2>&1; then
+            cat render.log
+          else
+            echo "::error::the Vulkan render failed; see the validation output below"
+            grep -m 12 -E "VUID|Validation Error|validation|error" render.log |
+              while IFS= read -r line; do echo "::error::$line"; done
+            tail -n 12 render.log | while IFS= read -r line; do echo "::error::$line"; done
+            # The compute fallback is the other half of Section 3.2: knowing whether it also
+            # crashes says whether the fault is the mesh pipeline or something shared.
+            if timeout 240 $RENDER --compute --screenshot /tmp/compute.png > compute.log 2>&1; then
+              echo "::error::the compute fallback rendered fine - the fault is the task/mesh pipeline"
+            else
+              grep -m 6 -E "VUID|Validation Error|error" compute.log |
+                while IFS= read -r line; do echo "::error::compute: $line"; done
+            fi
+            sudo apt-get install -y gdb >/dev/null 2>&1 || true
+            if command -v gdb >/dev/null 2>&1; then
+              timeout 180 gdb -batch -ex run -ex bt --args $RENDER --screenshot /tmp/crash.png \
+                > crash.log 2>&1 || true
+              grep -E "^#[0-9]+ " crash.log | head -10 |
+                while IFS= read -r line; do echo "::error::$line"; done
+            fi
+            exit 1
+          fi
+          ./build/SilkCrowd --screenshot artifacts/linux_software.png --scene head \
+            --style 0 --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: artifacts/*.png
+      - name: Upload Vulkan report
+        # Deliberately not named screenshots-*: the update-readme job downloads that pattern
+        # into docs/images/ci, and a text file has no business there.
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-linux
+          path: artifacts/gpu_info.txt
+
+  windows:
+    name: Windows (Vulkan SDK)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Vulkan SDK
+        # Pinning an exact SDK build breaks the day LunarG removes that installer from
+        # sdk.lunarg.com (1.3.290.0 already 404s). Ask for the current build and let the
+        # action's cache keep it warm.
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: latest
+          install_runtime: true
+          cache: true
+      - name: Install ccache
+        run: choco install ccache --no-progress -y
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        run: |
+          ccache --max-size=1.5G
+          cmake -B build -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          # The Vulkan loader is a run-time DLL; without it the binary exits with 0xC0000135
+          # before main() and prints nothing at all.
+          if (Test-Path "$env:VULKAN_SDK\Bin") {
+            Add-Content -Path $env:GITHUB_PATH -Value "$env:VULKAN_SDK\Bin"
+          }
+      - name: Build
+        run: |
+          cmake --build build --config Release -j 2 *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '### Build failed'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Get-Content build.log -Tail 120 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Select-String -Path build.log -Pattern 'error' | Select-Object -First 8 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
+      - name: Put the Vulkan loader next to the executable
+        # The SDK installs the runtime but may leave vulkan-1.dll outside Bin (and outside
+        # System32), so the linked binary cannot start (0xC0000135). Find it once and copy it
+        # beside the executable - that also mirrors what CMake does when it can see it.
+        run: |
+          $roots = @("$env:VULKAN_SDK", "C:\VulkanSDK", "C:\Windows\System32")
+          $dll = Get-ChildItem -Path $roots -Filter vulkan-1.dll -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName build/Release/vulkan-1.dll -Force
+            Write-Output "::error::copied $($dll.FullName)"
+          } else {
+            Write-Output "::error::vulkan-1.dll was not found under $($roots -join ', ')"
+          }
+      - name: Smoke test (which DLL is missing, if any)
+        # A 0xC0000135 exit means the loader could not find a dependency and Windows prints
+        # nothing at all. Annotations are the only channel readable when the run log is not
+        # available, and GitHub keeps at most ten per step - so the exit code comes first.
+        run: |
+          $out = & ./build/Release/SilkCrowd.exe --help 2>&1 | Select-Object -First 3
+          $rc = $LASTEXITCODE
+          Write-Output "::error::smoke exit code: $rc (0x$('{0:X8}' -f $rc))"
+          $out | Select-Object -First 3 | ForEach-Object { Write-Output "::error::out: $_" }
+          Write-Output "::error::loader next to exe: $(Test-Path build/Release/vulkan-1.dll)"
+          Write-Output "::error::loader in System32: $(Test-Path \"$env:WINDIR\System32\vulkan-1.dll\")"
+          exit 0
+      - name: Validation suite
+        run: |
+          build/Release/SilkCrowd.exe --validate --report docs/validation_report.txt *>&1 |
+            Tee-Object -FilePath validate.log
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+            Write-Output "::error::validation suite exit code $rc"
+            if (Test-Path validate.log) {
+              Write-Output "::error::validate.log has $((Get-Item validate.log).Length) bytes"
+              Get-Content validate.log -Tail 25 | ForEach-Object { Write-Output "::error::$_" }
+            } else {
+              Write-Output "::error::validate.log was not created"
+            }
+            exit 1
+          }
+      - name: Vulkan diagnostics
+        # Informational here: a hosted Windows runner has the loader but no ICD, so the expected
+        # verdict is `no-driver`. The Linux job is the hard gate; this report is what makes the
+        # Windows render step's outcome readable after the fact.
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          build/Release/SilkCrowd.exe --gpu-info | Tee-Object -FilePath artifacts/gpu_info.txt
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { Write-Host "::warning::Vulkan path unavailable on this runner (verdict exit $rc)" }
+          # The exit code of the last native command would otherwise fail the step for doing
+          # exactly what it is here to do (report a machine without an ICD).
+          exit 0
+      - name: Headless render
+        # A hosted Windows runner has the loader but no Vulkan ICD, so this renders on the
+        # software rasteriser (the app says so and falls back). Small on purpose: the software
+        # path is ~5 s per frame at this size.
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          build/Release/SilkCrowd.exe --screenshot artifacts/windows.png --scene head `
+            --style 4 --strands 20000 --width 480 --height 320 --frames 1 --headless
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::the headless render failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: artifacts/*.png
+      - name: Upload Vulkan report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-windows
+          path: artifacts/gpu_info.txt
+
+  sanitize:
+    # Nothing here needs Vulkan, Qt or a GPU: the core library is what owns every buffer the
+    # renderers write into, so an instrumented build of it plus the unit tests is the cheapest
+    # thing that can catch an out-of-bounds write or a dangling reference. The first time this
+    # was run by hand it found a real use-after-free (resetSampleSetStats clearing a cache whose
+    # entries the renderers keep references to), which is the whole argument for the job.
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build and run the unit tests with ASan + UBSan
+        run: |
+          set -o pipefail
+          if ! make -j2 sanitize 2>&1 | tee sanitize.log; then
+            {
+              echo '### Sanitizer failure'
+              echo '```'
+              tail -n 120 sanitize.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  macos:
+    name: macOS (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # Homebrew bottles and ccache are both large and both cache well.
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-${{ hashFiles('.github/brew-packages.txt') }}
+          restore-keys: brew-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          xargs brew install < .github/brew-packages.txt
+          brew install ccache
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        run: |
+          ccache --max-size=1.5G
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DVulkan_INCLUDE_DIR="$(brew --prefix vulkan-headers)/include" \
+            -DVulkan_LIBRARY="$(brew --prefix vulkan-loader)/lib/libvulkan.dylib"
+      - name: Build
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            {
+              echo '### Build failed'
+              echo '```'
+              tail -n 120 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Annotations are the only part of a failure that is always readable through the
+            # API, so the actual compiler errors are re-emitted as error annotations too.
+            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+      - name: Validation suite
+        run: |
+          if ! ./build/SilkCrowd --validate | tee validate.log; then
+            grep -E "FAIL|RESULT" validate.log | head -12 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
+      - name: Vulkan diagnostics
+        # MoltenVK on a hosted runner is best-effort (it depends on the runner exposing Metal),
+        # so this reports instead of gating. The Linux job is the hard gate for the Vulkan path.
+        run: |
+          # Resolve the MoltenVK ICD inside the shell: $(...) is not expanded in `env:`.
+          export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
+          mkdir -p artifacts
+          ./build/SilkCrowd --gpu-info > artifacts/gpu_info.txt || true
+          cat artifacts/gpu_info.txt
+      - name: Headless render
+        run: |
+          export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
+          mkdir -p artifacts
+          ./build/SilkCrowd --screenshot artifacts/macos_vulkan.png --scene head --style 2 \
+            --strands 40000 --width 960 --height 640 --headless || true
+          ./build/SilkCrowd --screenshot artifacts/macos.png --scene head --style 2 \
+            --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-macos
+          path: artifacts/*.png
+      - name: Upload Vulkan report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-info-macos
+          path: artifacts/gpu_info.txt
+
+  ios-simulator:
+    name: iOS simulator (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoltenVK
+        run: brew install molten-vk vulkan-headers vulkan-loader glslang
+      - name: Build the headless renderer for the simulator
+        run: |
+          # Code signing is irrelevant for a simulator binary and its absence stops the Xcode
+          # generator with an opaque error, so it is switched off explicitly.
+          # `run:` is executed with bash -e: a failing cmake inside the group would abort the
+          # script before rc=$?, and the whole step would fail without saying anything.
+          set +e
+          {
+            cmake -B build-ios -G Xcode \
+              -DCMAKE_SYSTEM_NAME=iOS \
+              -DCMAKE_OSX_SYSROOT=iphonesimulator \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
+              -DSILKCROWD_WITH_QT=OFF \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build build-ios --config Release -j 2
+          } > build-ios.log 2>&1
+          rc=$?
+          set -e
+          echo "cmake exit code: $rc (log: $(wc -l < build-ios.log) lines)"
+          cat build-ios.log
+          if [ "$rc" -ne 0 ]; then
+            grep -m 12 -E "error|Error|failed|BUILD FAILED" build-ios.log |
+              while IFS= read -r line; do echo "::error::$line"; done
+            tail -n 15 build-ios.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit "$rc"
+          fi
+      - name: Check the built products
+        # This job is a *build* gate: a simulator binary is an arm64 iOS Mach-O and cannot be
+        # executed by the runner's shell, so the paper validation runs in the macOS job (same
+        # sources, host toolchain) and here we only prove the iOS build produced a real binary.
+        run: |
+          mkdir -p artifacts
+          BIN=build-ios/Release-iphonesimulator/SilkCrowd.app/SilkCrowd
+          [ -f "$BIN" ] || BIN=build-ios/Release-iphonesimulator/SilkCrowd
+          ls -l "$BIN"
+          file "$BIN" | tee artifacts/ios_binary.txt
+          file "$BIN" | grep -q "Mach-O.*arm64" || {
+            echo "::error::the iOS build produced no arm64 Mach-O binary"
+            exit 1
+          }
+
+  android-emulator:
+    name: Android (APK build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Cache the NDK (before installing it, so a hit skips the 2 GB download)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          key: ndk-26.1.10909125-${{ runner.os }}
+      - name: Install NDK, CMake and glslc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools
+          # android/app/build.gradle pins ndkVersion 26.1.10909125; install exactly that so
+          # Gradle does not have to guess (or silently download one) on the runner.
+          # A cache hit already placed the NDK; only pay for the download on a miss.
+          if [ ! -d "$ANDROID_HOME/ndk/26.1.10909125" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;26.1.10909125"
+          fi
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+      - name: Compile the shaders
+        # glslang-tools provides glslangValidator; glslc lives in a separate package and is not
+        # on every runner (this step used to exit 127 here). Use whichever is present, keep a
+        # log, and re-emit the first errors as annotations - that is all that survives a run
+        # whose log cannot be downloaded.
+        run: |
+          mkdir -p android/app/src/main/assets/shaders
+          SHADERS="hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert head.vert
+                   head.frag fullscreen.vert composite.frag bloom.frag shadow.frag taa.frag"
+          compile() {
+            for s in $SHADERS; do
+              echo "== $s"
+              if [ -n "${GLSLC:-}" ]; then
+                glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
+                  -o "android/app/src/main/assets/shaders/$s.spv"
+              else
+                glslangValidator -V --target-env vulkan1.2 -Ishaders "shaders/$s" \
+                  -o "android/app/src/main/assets/shaders/$s.spv"
+              fi
+            done
+          }
+          if command -v glslc >/dev/null 2>&1; then
+            echo "compiling with glslc"
+            GLSLC=1 compile > shader.log 2>&1 || rc=$?
+          else
+            echo "compiling with glslangValidator (glslc is not installed)"
+            compile > shader.log 2>&1 || rc=$?
+          fi
+          cat shader.log
+          if [ "${rc:-0}" -ne 0 ]; then
+            grep -m 8 -E "ERROR|error:" shader.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit "$rc"
+          fi
+      # Gradle downloads, the wrapper distribution and the NDK are the slow parts of an
+      # Android run; none of them change when only C++ sources do, so they get their own
+      # keys rather than sharing the source-hashed one.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          # pipefail, or `tee` decides the exit status and a failed Gradle build passes this
+          # step (that is exactly what happened: "success" here, no APK afterwards).
+          set -o pipefail
+          if ! ./gradlew --no-daemon --build-cache assembleDebug 2>&1 | tee gradle.log; then
+            echo "::error::gradle assembleDebug failed - first causes follow"
+            { grep -E -A2 "^ *CMake Error|^FAILURE: |> Task .*FAILED|\* What went wrong|Caused by:|error:|Could not (resolve|find|install|download|create|determine)" gradle.log || true; } |
+              head -8 | while IFS= read -r line; do echo "::error::$line"; done
+            echo "--- tail of gradle.log"
+            tail -n 25 gradle.log
+            exit 1
+          fi
+          echo "--- apk produced"
+          find app/build/outputs -name '*.apk' -exec ls -l {} \;
+      - name: Check the APK
+        # Deliberately a build gate. Running it needs a booted API 33 emulator, which needs KVM;
+        # GitHub's hosted runners keep that step queued for 20+ minutes and then fail to boot,
+        # so a run here would only ever test the runner. What this step does prove: the APK
+        # carries the NDK library for both ABIs and the compiled shaders, i.e. the whole
+        # Android pipeline (CMake + NDK + glslc + Gradle + NativeActivity) built end to end.
+        #
+        # Everything is written to artifacts/ *before* any check, so a failing run still
+        # uploads the evidence (the log of this job is not always downloadable).
+        run: |
+          mkdir -p artifacts
+          {
+            echo "pwd=$(pwd)"
+            echo "--- top level"
+            ls -a
+            echo "--- *.apk"
+            find . -name '*.apk' -not -path './.git/*'
+            echo "--- build output tree"
+            find android -maxdepth 5 -path '*outputs*' -type d 2>/dev/null | head -20
+          } > artifacts/apk_probe.txt 2>&1
+          cat artifacts/apk_probe.txt
+          APK=$(find . -name '*.apk' -not -path './.git/*' | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::no .apk anywhere in the workspace - Gradle reported success without packaging one"
+            exit 1
+          fi
+          APK="$APK" python3 - <<'PY'
+          import os, sys, zipfile, pathlib
+          apk = pathlib.Path(os.environ["APK"])
+          out = pathlib.Path("artifacts/apk_contents.txt")
+          print("apk:", apk, apk.stat().st_size, "bytes")
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+          out.write_text("\n".join(names) + "\n")
+          natives = sorted(n for n in names if n.endswith(".so"))
+          shaders = sorted(n for n in names if n.endswith(".spv"))
+          print("native libraries:", *natives, sep="\n  ")
+          print("shaders:", len(shaders))
+          abis = sorted({n.split("/")[1] for n in natives if n.startswith("lib/")})
+          print("ABIs:", abis)
+          required = [r for r in ("lib/arm64-v8a/libsilkcrowd.so",
+                                  "lib/x86_64/libsilkcrowd.so",
+                                  "assets/shaders/hair.task.spv",
+                                  "assets/shaders/hair.mesh.spv",
+                                  "assets/shaders/hair.frag.spv",
+                                  "assets/shaders/hair_compute.comp.spv") if r not in names]
+          if required:
+              print("::error::the APK is missing " + ", ".join(required))
+              sys.exit(1)
+          print("::notice::APK ok: libsilkcrowd.so for " + "/".join(abis)
+                + ", " + str(len(shaders)) + " SPIR-V modules")
+          PY
+      - name: Upload the APK listing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: artifacts/
+          if-no-files-found: warn
+
+  update-readme:
+    name: Update the README screenshot table
+    needs: [linux, windows, macos, android-emulator]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshots-*
+          path: docs/images/ci
+      - name: Composite the table
+        run: python3 tools/update_readme.py docs/images/ci
+      - name: Commit the updated README
+        run: |
+          git config user.name  "SilkCrowd CI"
+          git config user.email "ci@silkcrowd.invalid"
+          git add README.md docs/images/ci
+          git diff --cached --quiet || git commit -m "ci: refresh the per-platform render table"
+          git push origin HEAD:main

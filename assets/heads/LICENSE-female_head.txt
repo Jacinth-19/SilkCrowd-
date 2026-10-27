@@ -1,0 +1,27 @@
+female_head_scan.glb -- female head bust for SilkCrowd
+======================================================
+
+The mesh and its skin texture are derived from MakeHuman / MPFB.
+
+  * Original: MakeHuman 2.0 female base mesh ("base" mesh, vertex groups, and the
+    "Human.body" 2048x2048 skin atlas), exported to glTF with the MakeHuman Plugin
+    For Blender (MPFB). Obtained from the CC0 avatar collection shipped with
+    met4citizen/TalkingHead (avatars/mpfb.glb).
+  * MakeHuman's assets are released under CC0 1.0 Universal (public domain dedication):
+    https://creativecommons.org/publicdomain/zero/1.0/
+    MakeHuman: http://www.makehumancommunity.org/
+    MPFB:       https://github.com/makehumancommunity/mpfb2
+
+What this repository changed (see tools/prep_female.py for the exact steps):
+
+  * everything below the neck was cut away, apart from a short bust and a capped neck;
+  * the bust was uniformly scaled (x0.905) and translated into SilkCrowd's head space
+    (crown at y = +0.128 m, midline at x = 0, face toward +z);
+  * MakeHuman's flat-red eyeball placeholder was replaced: the two eyeball spheres were
+    deleted and rebuilt as front-projected globes, and their atlas islands re-painted
+    with a pupil, an iris and sclera;
+  * the body atlas is otherwise kept byte-for-byte at its authored 2048x2048 resolution
+    and with MakeHuman's own UV layout, so lips, brows and ears stay registered.
+
+CC0 places no attribution requirement on the result; the credit above is given because
+that is the decent thing to do.

@@ -1,0 +1,154 @@
+// =============================================================================
+//  SilkCrowd - hair_compute.comp
+//  Compute-shader fallback for devices without task/mesh shaders (Adreno, Intel UHD 630,
+//  any Vulkan 1.0/1.1 device). Paper Section 3.2:
+//
+//    "The main challenge with a compute shader implementation is handling our task shader
+//     operations that determine the number of hair strands per bundle and the total
+//     number of compute shader executions. This can be performed on the CPU prior to
+//     dispatching the compute shaders or it can be handled as an initial pass with
+//     compute shaders on the GPU."
+//
+//  We implement Option A: the CPU pre-pass (same code as the task shader, running on the
+//  host) fills a work-item table with (bundle, strandIndex, vertexExponent, thickness),
+//  and this shader consumes one work item per invocation. The geometry is written to an
+//  SSBO as 2*ns+2 ribbon vertices plus 2*ns triangle indices, then drawn with a plain
+//  vertex/fragment pass -- which is exactly the "followed by rasterisation" pipeline the
+//  paper describes for the compute path.
+// =============================================================================
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "hair_common.glsl"
+
+layout(local_size_x = 32) in;  // one SIMD wavefront per workgroup, one strand per lane
+
+layout(std430, set = 3, binding = 0) readonly buffer RootSamples { vec2 samples[]; } roots;
+layout(std430, set = 3, binding = 1) readonly buffer RootSamplesTriangle { vec2 samples[]; } rootsTri;
+// Set 2 binding 0 is BundleData (read by the task shader), binding 1 is BundleMeta - the
+// same convention as hair.mesh, so one descriptor set serves every hair path.
+layout(std430, set = 2, binding = 1) readonly buffer BundleMeta { vec4 meta[]; } bundleMeta;
+
+// Work item table produced by the CPU pre-pass ("Option A").
+//   .x = bundle, .y = strandIndex, .z = vertexExponent, .w = thicknessScale
+layout(std430, set = 3, binding = 2) readonly buffer WorkItems { vec4 items[]; } work;
+
+// Output geometry: one slot per strand, each holding 2*ns+2 vertices and 2*ns triangles.
+// The layout is fixed at the host-selected maximum (ns = 32) so that offsets are
+// trivially computable; lower LOD strands simply use a prefix.
+layout(std430, set = 3, binding = 3) writeonly buffer OutVertices {
+    vec4 positions[];   // xyz = object-space position, w = w styling coordinate
+} outVerts;
+layout(std430, set = 3, binding = 4) writeonly buffer OutTangents {
+    vec4 tangents[];    // xyz = object-space tangent, w = strand seed (bit-cast)
+} outTangs;
+layout(std430, set = 3, binding = 5) writeonly buffer OutIndices {
+    uint indices[];
+} outIdx;
+layout(std430, set = 3, binding = 6) writeonly buffer OutMeta {
+    vec4 strandInfo[];  // x = first vertex, y = vertex count, z = first index, w = index count
+} outMeta;
+
+layout(push_constant) uniform PushConstants {
+    uint maxSegments;      // 32
+    uint numWorkItems;
+    uint frameIndex;
+    uint flags;
+} pc;
+
+// Ribbon stride. pc.maxSegments is the largest segment count used by any strand in this
+// dispatch (the CPU pre-pass knows it), so the output buffers are laid out with a single
+// uniform stride: 2*ns+2 vertices and 2*ns triangles per strand (Section 3.2).
+#define SC_MAX_VERTICES (2u * pc.maxSegments + 2u)
+#define SC_MAX_INDICES (2u * pc.maxSegments * 3u)
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.numWorkItems) return;
+
+    vec4 item = work.items[gid];
+    uint bundle = uint(item.x);
+    uint strandIndex = uint(item.y);
+    uint exponent = clamp(uint(item.z), 0u, pc.maxSegments > 0u ? uint(max(pc.maxSegments, 1u)) : 5u);
+    float thicknessScale = item.w;
+
+    uint ns = 1u << exponent;
+    uint vertexCount = ns + 1u;
+
+    // ---- root placement (Section 3.3) ----
+    bool isTriangle = bundleMeta.meta[bundle].x > 0.5;
+    uint tableSize = isTriangle ? uint(rootsTri.samples.length()) : uint(roots.samples.length());
+    uint sampleIndex = (strandIndex + bundle * 131u) % max(tableSize, 1u);
+    vec2 xi = isTriangle ? rootsTri.samples[sampleIndex] : roots.samples[sampleIndex];
+    vec2 blockCoord = isTriangle ? triangleRootPosition(xi) : clamp(xi, vec2(0.002), vec2(0.998));
+
+    vec2 st = blockToSlice(bundle, blockCoord);
+    vec2 uv = sampleUV(st);
+    StrandState state = makeStrandState(uv, strandIndex, bundle);
+    float lengthScale = 1.0 - model.styling2.z * 0.5 * scHash11(float(state.seed) * 1e-4);
+    float layers = model.textureSize.w;
+    float gamma = clamp(model.hairParams.w, 0.0, 1.0);
+
+    vec3 pos[33];
+    vec3 morphed[33];
+    float wCoord[33];
+    pos[0] = sampleSlice(st, 0.0);
+    morphed[0] = pos[0];
+    wCoord[0] = 0.0;
+
+    for (uint k = 1u; k < vertexCount; ++k) {
+        float v = float(k) / float(ns);
+        float t = v * (layers - 1.0) * lengthScale;
+        vec3 base = evalCurve(st, t);
+        float w = sampleW(st, t);
+        mat3 Mp = stylingMatrix(st, t);
+        pos[k] = base + Mp * vec3(styleDisplacement(state, w, int(k)), 0.0);
+        morphed[k] = pos[k];
+        wCoord[k] = v;
+    }
+    if (gamma > 0.0) {
+        for (uint k = 1u; k + 1u < vertexCount; k += 2u)
+            morphed[k] = mix(pos[k], (pos[k - 1u] + pos[k + 1u]) * 0.5, gamma);
+    }
+
+    // ---- tangents (Eq. 5/6 endpoints, Section 3.5) ----
+    vec3 tangent[33];
+    for (uint k = 1u; k + 1u < vertexCount; ++k) tangent[k] = pos[k + 1u] - pos[k - 1u];
+    tangent[0] = tangentFirst(pos[0], pos[1], tangent[1]);
+    tangent[vertexCount - 1u] = tangentLast(pos[vertexCount - 1u], pos[vertexCount - 2u],
+                                            tangent[vertexCount - 2u]);
+
+    // ---- write the ribbon ----
+    uint baseVertex = gid * SC_MAX_VERTICES;
+    uint baseIndex = gid * SC_MAX_INDICES;
+    vec3 cameraObj = (model.modelInv * vec4(model.cameraPos.xyz, 1.0)).xyz;
+    float radius = model.styling3.y * state.thicknessScale * thicknessScale;
+    uint seedBits = floatBitsToUint(float(state.seed));
+
+    for (uint k = 0u; k < vertexCount; ++k) {
+        vec3 toCam = normalize(cameraObj - morphed[k]);
+        vec3 side = cross(tangent[k], toCam);
+        if (dot(side, side) < 1e-12) side = cross(tangent[k], vec3(0.0, 1.0, 0.0));
+        side = normalize(side + vec3(1e-9));
+        vec3 offset = side * radius;
+        outVerts.positions[baseVertex + 2u * k] = vec4(morphed[k] + offset, wCoord[k]);
+        outTangs.tangents[baseVertex + 2u * k] =
+            vec4(normalize(tangent[k] + vec3(1e-9)), uintBitsToFloat(seedBits));
+        outVerts.positions[baseVertex + 2u * k + 1u] = vec4(morphed[k] - offset, wCoord[k]);
+        outTangs.tangents[baseVertex + 2u * k + 1u] =
+            vec4(normalize(tangent[k] + vec3(1e-9)), uintBitsToFloat(seedBits));
+    }
+
+    for (uint k = 0u; k < ns; ++k) {
+        uint l0 = 2u * k, r0 = l0 + 1u, l1 = l0 + 2u, r1 = l0 + 3u;
+        outIdx.indices[baseIndex + 6u * k + 0u] = l0;
+        outIdx.indices[baseIndex + 6u * k + 1u] = r0;
+        outIdx.indices[baseIndex + 6u * k + 2u] = l1;
+        outIdx.indices[baseIndex + 6u * k + 3u] = l0;
+        outIdx.indices[baseIndex + 6u * k + 4u] = l1;
+        outIdx.indices[baseIndex + 6u * k + 5u] = r1;
+    }
+
+    outMeta.strandInfo[gid] = vec4(float(baseVertex), float(2u * vertexCount),
+                                   float(baseIndex), float(6u * ns));
+}
