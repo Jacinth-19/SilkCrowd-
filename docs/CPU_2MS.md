@@ -6,11 +6,11 @@ or better?*
 
 Short answer, measured on this machine, with nothing projected or extrapolated:
 
-* **No — not the whole frame.** The fast CPU path renders the Figure 1 crowd in **25.5 s**,
-  which is **12,700×** the paper's 2 ms. That is not a surprise and it is not a defect in the
+* **No — not the whole frame.** The fast CPU path renders the Figure 1 crowd in **24.8 s**,
+  which is **12,400×** the paper's 2 ms. That is not a surprise and it is not a defect in the
   implementation: it is the 8,192× difference in parallel lanes, minus what the CPU recovers
   per lane.
-* **Per core, the CPU is within 8× of the paper's GPU per lane** (39.4k vs 305k strands/s).
+* **Per core, the CPU is within 7.5× of the paper's GPU per lane** (40.4k vs 305k strands/s).
   The wall-clock gap is hardware, not algorithm.
 * **Yes for the part of the frame the CPU actually owns.** All of the per-frame CPU work the
   paper's method needs — Eq. 7–12 for **4,130 bundles across 100 models**, the Eq. 8 strand
@@ -28,7 +28,7 @@ Everything below is reproducible with the commands in §9.
 | --- | --- | --- |
 | Scene | 100 characters, 100k strands each = 10M strands | `--scene crowd --crowd 100`, 40k strands each = 4M strands (LOD → 2.0M) |
 | Frame | geometry generation + rasterisation + shading, 8× MSAA | same geometry, 1 sample per pixel (§7) |
-| Time | **2 ms** | **25,472 ms** |
+| Time | **2 ms** | **24,832 ms** |
 | Storage | 1.7 MB of hair-mesh textures | 1.9 MB for the same 100 models |
 
 The paper's 2 ms is a *whole frame*: amplification, styling, shading, rasterisation. To claim
@@ -88,18 +88,18 @@ lanes, 24 GB at 1 TB/s.
 
 | phase | ms | share | ns/strand | ns/vertex |
 | --- | --- | --- | --- | --- |
-| front end (Eq. 7–12, cull) | 0.07 | 0.0 % | 2.1 | — |
-| generation (Figure 3e) | 189.1 | 28.4 % | 5,343 | **161.9** |
-| raster (ribbon capsules) | 472.6 | 71.0 % | 13,355 | — |
-| resolve (composite + tonemap) | 3.5 | 0.5 % | — | — |
-| **total** | **665.4** | 100 % | 18,800 | 569.7 |
+| front end (Eq. 7–12, cull) | 0.07 | 0.0 % | 1.8 | — |
+| generation (Figure 3e) | 187.3 | 28.3 % | 5,293 | **160.4** |
+| raster (ribbon capsules) | 470.4 | 71.1 % | 13,291 | — |
+| resolve (composite + tonemap) | 3.6 | 0.6 % | — | — |
+| **total** | **661.5** | 100 % | 18,690 | 566.4 |
 
 Workload: 221 bundles, 35,391 strands after Eq. 8, 1,167,903 vertices after Eq. 9–12,
 26.1 M shaded fragments (28.3 per pixel).
 
 ### The same head with LOD off (Figure 8's comparison workload)
 
-743.6 ms total — only 12 % slower, because at 0.4 m the detail level is already saturated:
+~740 ms total — only ~12 % slower, because at 0.4 m the detail level is already saturated:
 Eq. 7 gives `L ≈ 1`, so LOD has nothing to remove. The paper's ~24× LOD ratio appears at crowd
 distance, not in a hero shot.
 
@@ -108,28 +108,29 @@ distance, not in a hero shot.
 | scene | front end | generation | raster | resolve | total |
 | --- | --- | --- | --- | --- | --- |
 | 20 heads, 720p | 0.29 | 1,768.6 | 2,406.9 | 3.5 | **4,179.3** |
-| **100 heads, 720p** | **1.17** | **10,975.2** | **14,491.0** | 4.4 | **25,471.8** |
-| 100 heads, front end only | 1.17 | — | — | — | **1.17** |
-| hero head, 640×360 | 0.07 | 103.5 | 164.1 | 1.1 | 268.7 |
-| hero head, 720p, 1 thread | 0.07 | 297.9 | 722.7 | 3.8 | 1,024.5 |
+| **100 heads, 720p** | **1.12** | **10,295.1** | **14,532.2** | 3.1 | **24,831.5** |
+| 100 heads, front end only | 1.12 | — | — | — | **1.12** |
+| hero head, 720p | 0.07 | 187.3 | 470.4 | 3.6 | **661.5** |
+| hero head, 640×360 | 0.07 | 105.4 | 165.3 | 1.3 | **272.1** |
+| hero head, 720p, 1 thread | 0.06 | 309.9 | 755.4 | 2.7 | **1,068.1** |
 
 The 100-head workload: 4,130 bundles, **2,006,895 strands** after Eq. 8, **66,227,535
 vertices** after Eq. 9–12, 64,220,640 ribbon segments, 497 M shaded fragments.
 
-Threading scales the frame 1.55× on 2 threads (1,024 → 665 ms): the path is partly
+Threading scales the frame 1.62× on 2 threads (1,068 → 661 ms): the path is partly
 memory-bound, and there are only two cores to scale to.
 
 ## 6. The 2 ms line
 
 | within 2 ms? | what | measured |
 | --- | --- | --- |
-| **YES, 1.7× headroom** | front end + LOD for 100 characters (4,130 bundles, Eq. 7–12, Eq. 8 counts, culling, ordering) | **1.17 ms** |
-| no, 95× over | front end + geometry for 100 characters, no rasterisation at all | 10,976 ms |
-| no, 12,700× over | the full 100-character frame | 25,472 ms |
-| no | one hero head at 720p | 665 ms |
-| no | one hero head at 360p | 269 ms |
+| **YES, 1.8× headroom** | front end + LOD for 100 characters (4,130 bundles, Eq. 7–12, Eq. 8 counts, culling, ordering) | **1.12 ms** |
+| no, 92× over | front end + geometry for 100 characters, no rasterisation at all | 10,296 ms |
+| no, 12,400× over | the full 100-character frame | 24,832 ms |
+| no | one hero head at 720p | 661 ms |
+| no | one hero head at 360p | 272 ms |
 
-What 2 ms of *this* CPU buys, at the crowd's detail level: **158 strands**, or **12.4k generated
+What 2 ms of *this* CPU buys, at the crowd's detail level: **162 strands**, or **5.3k generated
 vertices**, or **0.008 of a character**. The paper's 2 ms buys 100 characters (its own Figure 1
 caption: 100k strands each).
 
@@ -141,9 +142,9 @@ package:
 | | total strands/s | lanes | strands/s per lane |
 | --- | --- | --- | --- |
 | Paper, RTX 4090 (100 chars × 100k strands / 2 ms) | 5.0 × 10⁹ | 16,384 FP32 lanes | 305,000 |
-| This CPU path (2.0 M strands / 25.47 s) | 78,800 | 2 cores | **39,400** |
+| This CPU path (2.0 M strands / 24.83 s) | 80,800 | 2 cores | **40,400** |
 
-**Within 8× per lane**, while the package-level gap is 12,700× — and 16,384 / 2 = 8,192 is
+**Within 7.5× per lane**, while the package-level gap is 12,400× — and 16,384 / 2 = 8,192 is
 almost exactly the wall-clock ratio. In other words: the paper's method costs this CPU about
 the same number of operations per strand as it costs the 4090 per lane, so the deficit is
 lane count. The residue (the factor ~1.5 left over after dividing out 8,192) is what the GPU
@@ -151,7 +152,7 @@ gets from hardware texture units (4-tap bilinear filtering in one instruction, w
 does in ~35 ns) and from hardware rasterisation.
 
 This is the answer to "can we beat 2 ms on a CPU": **with 2 cores, no — you would need about
-1,000 cores** (12,700 × 2 / 8 per-lane deficit). With those cores the method would fit, which
+3,300 cores** (12,400 × 2 / 7.5 per-lane deficit). With those cores the method would fit, which
 is the useful finding: nothing in the paper's algorithm *requires* a GPU; it requires
 parallelism.
 
@@ -206,6 +207,12 @@ In the order they would pay off, with measured or arithmetic justification:
    per pass: the generation phase's 162 ns/vertex is ~35 ns of texture traffic plus ~125 ns of
    scalar lerp/styling, so this is worth an estimated 4–6× (not measured — it is not
    implemented; see `docs/NOT_IMPLEMENTED.md`).
-3. **A tile-based rasteriser with per-tile geometry bins.** The raster phase is 71 % of the
-   hero frame at 28 fragments/pixel; bins would cut the empty-bbox work, not the fill.
+3. **Not tiled bins.** Tried, and it does *not* help: splitting the screen into thread bands
+   (one writer per pixel, no per-thread buffer) measured **708 ms vs 661 ms**, i.e. slower —
+   the raster phase's cost is genuine fill (28 fragments per pixel of real overlap), not
+   bounding-box waste. That experiment did find two real bugs in the culling, both fixed:
+   the bundle's bounding sphere was offset *upwards* by half the strand length, so it sat
+   above the head while the hair hangs below it, and the screen bbox was taken from eight
+   projected sphere corners, which is not conservative when some corners are behind the
+   camera. Either bug removes hanging geometry whenever the cull fires.
 4. **Then, and only then, the GPU**, which is what the paper did.

@@ -173,6 +173,7 @@ struct FrameShared {
     int width = 1, height = 1;
     Mat4 viewProj;
     Vec3 camPos;
+    Vec3 viewForward;  // the camera's normalised forward axis
     Frustum frustum;
 };
 
@@ -242,31 +243,47 @@ void frontEnd(const Scene& scene, const Camera& cam, const RenderOptions& option
             job.vertices = vl.numVertices();
             job.gamma = vl.gamma;
 
-            // Bounding sphere of the bundle: half its scalp face plus the strand length.
-            const float lengthHalf = 0.5f * strandLength;
+            // Bounding sphere of the bundle: half its scalp face plus the strand length,
+            // plus slack for the styling, centred on the scalp point so that it covers the
+            // strands in every direction. Two bugs lived here: the centre was offset *up* by
+            // half the strand length (so the sphere sat above the head and the cull removed
+            // exactly the bundles that hang lowest - the hem), and the radius used the mesh
+            // bounds, which do not contain the styled strands (clumping, curls and flyaways
+            // push them out by a centimetre or two).
+            const float kStylingSlack = 0.08f;  // metres
+            const float lengthHalf = 0.5f * strandLength + kStylingSlack;
             const float radius = std::sqrt(hair.bundleSize[f] * hair.bundleSize[f] * 0.25f +
                                            lengthHalf * lengthHalf);
-            const Vec3 sphereCenter =
-                worldCenter + hair.transform.transformDirection(Vec3(0.0f, lengthHalf, 0.0f));
+            const Vec3 sphereCenter = worldCenter;
             if (!fs.frustum.sphereVisible(sphereCenter, radius) || job.strands == 0) {
                 ++st->bundlesCulled;
                 continue;
             }
-            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-            bool onScreen = false;
-            for (int c = 0; c < 8; ++c) {
-                const Vec3 corner = sphereCenter + Vec3(((c & 1) ? radius : -radius),
-                                                        ((c & 2) ? radius : -radius),
-                                                        ((c & 4) ? radius : -radius));
-                float sx, sy;
-                if (!projectToScreen(fs.viewProj, corner, &sx, &sy)) continue;
-                const float px = (sx * 0.5f + 0.5f) * static_cast<float>(fs.width);
-                const float py = (sy * 0.5f + 0.5f) * static_cast<float>(fs.height);
-                onScreen = true;
-                x0 = std::min(x0, px); x1 = std::max(x1, px);
-                y0 = std::min(y0, py); y1 = std::max(y1, py);
+            // Conservative screen bbox of the bounding sphere. Projecting its eight corners
+            // is not conservative: corners behind the camera are dropped, which is how a
+            // bundle that fills the lower half of the screen can end up with a bbox in its
+            // upper half. The perspective radius of a sphere `d` away along the view axis is
+            // r*f/sqrt(d^2-r^2) >= r*f/d, so r*f/d is a safe bound.
+            const float focal = 0.5f * static_cast<float>(fs.height) /
+                                std::max(1e-3f, std::tan(cam.fovY * 0.5f));
+            float scx, scy;
+            float x0, y0, x1, y1;
+            const float depthAlongView = dot(sphereCenter - fs.camPos, fs.viewForward);
+            if (depthAlongView <= 1e-4f) {  // around or behind the eye
+                ++st->bundlesCulled;
+                continue;
             }
-            if (!onScreen) {
+            if (!projectToScreen(fs.viewProj, sphereCenter, &scx, &scy)) {
+                ++st->bundlesCulled;
+                continue;
+            }
+            const float screenRadius = radius * focal / std::max(depthAlongView, radius * 1.001f) * 1.05f;
+            const float pcx = (scx * 0.5f + 0.5f) * static_cast<float>(fs.width);
+            const float pcy = (scy * 0.5f + 0.5f) * static_cast<float>(fs.height);
+            x0 = pcx - screenRadius; x1 = pcx + screenRadius;
+            y0 = pcy - screenRadius; y1 = pcy + screenRadius;
+            if (x1 < 0.0f || y1 < 0.0f || x0 > static_cast<float>(fs.width) ||
+                y0 > static_cast<float>(fs.height)) {
                 ++st->bundlesCulled;
                 continue;
             }
@@ -409,6 +426,7 @@ void CpuFastRenderer::generateOnly(const Scene& scene, const Camera& camera,
     fs.width = width;
     fs.height = height;
     fs.camPos = cam.position;
+    fs.viewForward = cam.forward();
     fs.viewProj = cam.proj() * cam.view();
     fs.frustum.fromViewProj(fs.viewProj);
 
@@ -442,6 +460,7 @@ void CpuFastRenderer::render(const Scene& scene, const Camera& camera,
     fs.width = width;
     fs.height = height;
     fs.camPos = cam.position;
+    fs.viewForward = cam.forward();
     fs.viewProj = cam.proj() * cam.view();
     fs.frustum.fromViewProj(fs.viewProj);
 

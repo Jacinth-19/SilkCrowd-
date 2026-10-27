@@ -189,12 +189,12 @@ On a 2-core Xeon at 2.6 GHz, for the 100-character Figure 1 scene:
 
 | phase | ms | what it is |
 | --- | --- | --- |
-| front end (Eq. 7-12, Eq. 8 counts, culling, sort) | **1.17** | the only per-frame work a CPU owns in a real implementation - **fits in 2 ms with 1.7x to spare** |
-| generation (Figure 3e, 66.2 M vertices) | 10,975 | 162 ns per generated vertex |
-| raster (ribbons, 1 sample/pixel) | 14,491 | 64.2 M segments, 497 M shaded fragments |
-| **whole frame** | **25,472** | 12,700x the paper's 2 ms |
+| front end (Eq. 7-12, Eq. 8 counts, culling, sort) | **1.12** | the only per-frame work a CPU owns in a real implementation - **fits in 2 ms with 1.8x to spare** |
+| generation (Figure 3e, 66.2 M vertices) | 10,295 | 156 ns per generated vertex |
+| raster (ribbons, 1 sample/pixel) | 14,532 | 64.2 M segments, 497 M shaded fragments |
+| **whole frame** | **24,832** | 12,400x the paper's 2 ms |
 
-Per parallel lane the CPU is within **8x** of the paper's GPU (39.4k vs 305k strands/s per
+Per parallel lane the CPU is within **7.5x** of the paper's GPU (40.4k vs 305k strands/s per
 lane); 16,384 / 2 = 8,192 is the lane-count ratio and essentially the whole wall-clock gap. So
 the deficit is cores, not algorithm - and the part of the frame that is genuinely CPU work fits
 inside the paper's budget. `docs/CPU_2MS.md` §7 has the arithmetic and §10 lists exactly which
@@ -540,7 +540,7 @@ Android APK gate.
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
 | Shaders | `glslang` 16 (SPIR-V) | **12/12** compile; every `.spv` starts with the SPIR-V magic. The previous "10 of 12" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
 | Android APK | `./gradlew assembleDebug` (NDK 26.1, CMake 3.22, AGP 8.5.2) in CI | **builds**: `libsilkcrowd.so` for `arm64-v8a` + `x86_64`, 12 SPIR-V modules in `assets/shaders`, per-ABI link clean |
-| Fast CPU path | `--cpu-budget --scene crowd --crowd 100 --front-end-only` | **1.17 ms** for 4,130 bundles; whole frame 25,472 ms (`docs/CPU_2MS.md`) |
+| Fast CPU path | `--cpu-budget --scene crowd --crowd 100 --front-end-only` | **1.12 ms** for 4,130 bundles; whole frame 24,832 ms (`docs/CPU_2MS.md`) |
 | Fast path = reference geometry | `./build/silkcrowd_tests` (`testCpuFastPath`) | max deviation **0.0 m** against `StrandGenerator`, 83 new checks |
 | Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 
