@@ -1,0 +1,291 @@
+name: CI
+
+# SilkCrowd is validated on every platform the paper's authors could plausibly run it on.
+#   linux      Mesa lavapipe software Vulkan (no GPU needed)
+#   windows    Vulkan SDK from LunarG + the software rasteriser fallback
+#   macos      MoltenVK through the Vulkan loader from Homebrew
+#   ios        MoltenVK on an iOS simulator (build only: simulation is headless)
+#   android    NDK build of the APK, 15 s headless run in an API 33 emulator
+#   update-readme  composites the per-platform screenshots into the README table
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (lavapipe)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # ---- caches ------------------------------------------------------------------
+      # Three layers, because a from-scratch Linux run spends most of its wall clock in
+      # apt and in the compiler, not in the tests:
+      #   * the downloaded .deb files, keyed on the package list (a dependency change is
+      #     the only thing that should invalidate it);
+      #   * ccache, keyed on the sources, with a fallback key so a source change still
+      #     gets a warm cache and only recompiles what changed;
+      #   * the Qt/Vulkan build products come out of ccache, so nothing else is needed.
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-packages.txt') }}
+          restore-keys: apt-${{ runner.os }}-
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          # --no-install-recommends keeps the archive small enough to cache usefully.
+          xargs -a .github/apt-packages.txt sudo apt-get install -y --no-install-recommends
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        # -DSILKCROWD_STRICT=ON turns -Wall -Wextra into -Werror for every target.
+        run: |
+          ccache --max-size=1.5G
+          ccache --zero-stats
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build build -j
+      - name: ccache statistics
+        run: ccache --show-stats
+      - name: Validation suite
+        run: ./build/SilkCrowd --validate --report docs/validation_report.txt
+      - name: Unit tests
+        run: ./build/silkcrowd_tests
+      - name: Headless render (Vulkan, lavapipe)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir -p artifacts
+          ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
+            --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless || true
+          ./build/SilkCrowd --screenshot artifacts/linux_software.png --scene head \
+            --style 0 --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: artifacts/*.png
+
+  windows:
+    name: Windows (Vulkan SDK)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+      - name: Install ccache
+        run: choco install ccache --no-progress -y
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        run: |
+          ccache --max-size=1.5G
+          cmake -B build -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build build --config Release -j 2
+      - name: Validation suite
+        run: build/Release/SilkCrowd.exe --validate
+      - name: Headless render (5 s)
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          build/Release/SilkCrowd.exe --screenshot artifacts/windows.png --scene head `
+            --style 4 --strands 40000 --width 960 --height 640 --frames 5 --headless
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: artifacts/*.png
+
+  macos:
+    name: macOS (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # Homebrew bottles and ccache are both large and both cache well.
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-${{ hashFiles('.github/brew-packages.txt') }}
+          restore-keys: brew-${{ runner.os }}-
+      - name: Install dependencies
+        run: |
+          xargs brew install < .github/brew-packages.txt
+          brew install ccache
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('src/**', 'include/**', 'shaders/**') }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Configure
+        run: |
+          ccache --max-size=1.5G
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DVulkan_INCLUDE_DIR="$(brew --prefix vulkan-headers)/include" \
+            -DVulkan_LIBRARY="$(brew --prefix vulkan-loader)/lib/libvulkan.dylib"
+      - name: Build
+        run: cmake --build build -j
+      - name: Validation suite
+        run: ./build/SilkCrowd --validate
+      - name: Headless render
+        run: |
+          # Resolve the MoltenVK ICD inside the shell: $(...) is not expanded in `env:`.
+          export VK_ICD_FILENAMES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
+          mkdir -p artifacts
+          ./build/SilkCrowd --screenshot artifacts/macos_vulkan.png --scene head --style 2 \
+            --strands 40000 --width 960 --height 640 --headless || true
+          ./build/SilkCrowd --screenshot artifacts/macos.png --scene head --style 2 \
+            --strands 40000 --width 960 --height 640 --software
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-macos
+          path: artifacts/*.png
+
+  ios-simulator:
+    name: iOS simulator (MoltenVK)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoltenVK
+        run: brew install molten-vk vulkan-headers vulkan-loader glslang
+      - name: Build the headless renderer for the simulator
+        run: |
+          # The renderer is platform independent; on iOS it is compiled with MoltenVK as
+          # the Vulkan implementation and exercised headlessly by the validation suite.
+          cmake -B build-ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DSILKCROWD_WITH_QT=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ios --config Release -j 2
+      - name: Validation suite on the simulator
+        run: |
+          mkdir -p artifacts
+          xcrun simctl list devices | head -5
+          ./build-ios/Release-iphonesimulator/SilkCrowd --validate | tee artifacts/ios_validation.txt
+
+  android-emulator:
+    name: Android emulator (API 33)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Cache the NDK (before installing it, so a hit skips the 2 GB download)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          key: ndk-26.1.10909125-${{ runner.os }}
+      - name: Install NDK, CMake and glslc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools
+          # android/app/build.gradle pins ndkVersion 26.1.10909125; install exactly that so
+          # Gradle does not have to guess (or silently download one) on the runner.
+          # A cache hit already placed the NDK; only pay for the download on a miss.
+          if [ ! -d "$ANDROID_HOME/ndk/26.1.10909125" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;26.1.10909125"
+          fi
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+      - name: Compile the shaders
+        run: |
+          mkdir -p android/app/src/main/assets/shaders
+          for s in hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert \
+                   head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag \
+                   taa.frag; do
+            glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
+              -o "android/app/src/main/assets/shaders/$s.spv"
+          done
+      # Gradle downloads, the wrapper distribution and the NDK are the slow parts of an
+      # Android run; none of them change when only C++ sources do, so they get their own
+      # keys rather than sharing the source-hashed one.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --build-cache assembleDebug
+      - name: Run headless for 15 s and capture a screenshot
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            mkdir -p artifacts
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am start -n com.silkcrowd.renderer/.MainActivity \
+              --ez headless true --ei seconds 15
+            sleep 20
+            adb exec-out screencap -p > artifacts/android.png
+            adb logcat -d | grep -i silkrowd | tail -40
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-android
+          path: artifacts/*.png
+
+  update-readme:
+    name: Update the README screenshot table
+    needs: [linux, windows, macos, android-emulator]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshots-*
+          path: docs/images/ci
+      - name: Composite the table
+        run: python3 tools/update_readme.py docs/images/ci
+      - name: Commit the updated README
+        run: |
+          git config user.name  "SilkCrowd CI"
+          git config user.email "ci@silkcrowd.invalid"
+          git add README.md docs/images/ci
+          git diff --cached --quiet || git commit -m "ci: refresh the per-platform render table"
+          git push origin HEAD:main

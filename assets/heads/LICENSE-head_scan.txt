@@ -1,0 +1,53 @@
+head_scan.glb - attribution and licence
+=======================================
+
+"Infinite, 3D Head Scan" by Lee Perry-Smith.
+Licensed under the Creative Commons Attribution 3.0 Unported License.
+Based on a work at www.triplegangers.com.
+Permissions beyond the scope of this license may be available at http://www.ir-ltd.net/
+
+Original release:  http://www.ir-ltd.net/infinite-3d-head-scan-released
+This distribution:  Morgan McGuire and Guedis Cardenas, http://graphics.cs.williams.edu/data/
+Vendored into SilkCrowd from BabylonJS/Assets: meshes/Lee-Perry-Smith-Head/
+
+Full upstream notice, as shipped with the asset:
+
+    Creative Commons Licence
+    Infinite, 3D Head Scan by Lee Perry-Smith is licensed under a Creative Commons
+    Attribution 3.0 Unported License.
+    Based on a work at www.triplegangers.com.
+    Permissions beyond the scope of this license may be available at http://www.ir-ltd.net/
+    Please remember: Do what you want with the files, but always mention where you got them
+    from...
+    ----------------------
+    This distribution was created by Morgan McGuire and Guedis Cardenas
+    http://graphics.cs.williams.edu/data/
+
+What SilkCrowd changed
+----------------------
+`tools/prep_head.py` (reproducible, no external Python packages) converts the upstream
+27 MB GLB into the 2.2 MB file in this directory:
+
+  * keeps the geometry (9,273 vertices / 17,684 triangles) and the photogrammetry
+    base-colour map, box-filtered from 4096^2 to 1024^2;
+  * drops the tangent-space normal map and the displacement map: the scan's normals are
+    already geometric at this density and the renderer does not use tangent-space maps;
+  * fits the bust into SilkCrowd's head space using landmarks measured on the mesh itself
+    (the neck is the narrowest slab between the shoulders and the jaw, the crown is the
+    highest vertex, the menton is the lowest midline vertex in front of the neck, the skull
+    width is the widest slab above the ears), then scales it uniformly so the skull is
+    0.161 m wide and places the crown at y = 0.128 m. Nothing is reshaped or re-sculpted:
+    it is a uniform scale and a translation.
+
+The result is a *derivative* of the scan and remains under CC BY 3.0. If you redistribute
+SilkCrowd or renders made with it, credit Lee Perry-Smith (Infinite-Realities, via
+triplegangers) as the source of the head scan.
+
+Regenerating
+------------
+    git clone --depth 1 https://github.com/BabylonJS/Assets /tmp/bjs
+    python3 tools/prep_head.py /tmp/bjs/meshes/Lee-Perry-Smith-Head/head.glb \
+        assets/heads/head_scan.glb --texture-size 1024
+
+`--procedural-head` (or deleting this file) falls back to the parametric head, which needs
+no binary asset at all.
