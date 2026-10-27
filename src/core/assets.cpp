@@ -368,9 +368,11 @@ bool HeadModel::loadScan(const std::string& glbPath, std::string* error) {
         // Long enough to leave the frame at the framing the images use: the point of the
         // skirt is that the viewer never sees where the scan was cut, not that the bust
         // stands on something.
-        // Far below the frame: a shallow cone that is cut by the bottom of the image reads
-        // as a stand, whereas an apex inside the frame reads as a party hat.
-        const float skirtDrop = 0.55f;
+        // Short and drawn inwards: a bust mount, not a cone. (A long drop closes the frame for
+        // a single head but turns every character in the crowd into a party hat, which is what
+        // the first version did; the crowd image is 100 of them.)
+        const float skirtDrop = 0.045f;
+        const float skirtPinch = 0.72f;
         const size_t firstNewVertex = head_.positions.size();
         std::vector<std::pair<uint32_t, uint32_t>> openEdges;
         for (const auto& e : edgeUse) {
@@ -389,7 +391,7 @@ bool HeadModel::loadScan(const std::string& glbPath, std::string* error) {
             for (const auto& e : openEdges) c = c + head_.positions[e.first] + head_.positions[e.second];
             c = c * (1.0f / static_cast<float>(2 * openEdges.size()));
             const size_t apex = head_.positions.size();
-            head_.positions.push_back(Vec3(c.x, c.y - skirtDrop, c.z));
+            head_.positions.push_back(Vec3(c.x * skirtPinch, c.y - skirtDrop, c.z * skirtPinch));
             head_.uvs.push_back(Vec2(0.50f, 0.34f));
             head_.normals.push_back(Vec3(0.0f, 0.15f, 1.0f));
             // With a constant normal and UV, the winding no longer matters for shading, but

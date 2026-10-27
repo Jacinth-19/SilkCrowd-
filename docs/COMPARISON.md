@@ -88,7 +88,7 @@ presets for that criterion, not the average — the question is what the rendere
 | Ends and flyaways | 8 | 5 | 8 % of strands now get a tip excursion of up to 34 mm in a seeded direction (`StrandStylingState::flyaway`), which is enough to leave the hair mesh's own volume and break the silhouette - visible at the hem and the crown in `docs/images/reference_floor.png`. The reference still has more of them, finer, and they catch the light differently because they are their own fibres rather than styled mesh strands. |
 | Skin under the hair | 8 | 6 | The scan's own albedo plus the new subsurface/T-zone/pore model (below) reads as skin at portrait distance; it still goes slightly waxy where the T-zone mask peaks on the nose. |
 | Eyes | 8 | 6 | Rebuilt globes with a painted iris, limbal ring and pupil (`docs` note in `tools/prep_female.py`). They read correctly from the front and from profile, but there is no tear line, no wet meniscus and no catchlight geometry in the scan path. |
-| Crowd of 100 | 9 | 6 | `docs/images/crowd_100_linux.png` is the paper's Figure 1 shot: 100 heads, 132.2 M triangles after LOD, 1.87 MB of textures. At that distance the styles read as silhouettes; they now vary in length and curl, but the mesh family is still shared. |
+| Crowd of 100 | 9 | 6 | `docs/images/crowd_100_linux.png` is the paper's Figure 1 shot: 100 heads, 77.0 M triangles after LOD, 1.61 MB of textures. At that distance the styles read as silhouettes; they now vary in length and curl, but the mesh family is still shared. |
 
 **Overall, in one line:** functionally this is a faithful implementation of the paper's pipeline
 (the geometry, the LOD, the textures, the storage); visually it is now **around three quarters of
@@ -139,7 +139,7 @@ answer from this repository is *don't trace anything, and make the raster path c
 | Scene | Strands defined | Strands after LOD | Triangles | Textures | Software frame (480x300, ssaa 1) |
 | --- | --- | --- | --- | --- | --- |
 | 1 head, bob | 39,780 | 14,488 (36.4 %) | 927,232 | 0.18 MB | 839 ms |
-| 100 heads | 9,998,570 | 754,433 (7.5 %) | 31,982,960 | 1.61 MB | 14.9 s |
+| 100 heads | 10,000,000 | 1,282,900 (12.8 %) | 76,991,488 | 1.61 MB | 38.1 s |
 | 200 teapots | 10,000,000 | 1,025,711 (10.3 %) | 26,262,960 | 1.53 MB | 12.4 s |
 
 The software rasteriser is ~1-2 % of a modern IGPU's fill and geometry throughput, so these are
