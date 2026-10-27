@@ -71,6 +71,10 @@ jobs:
               tail -n 120 build.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Annotations are the only part of a failure that is always readable through the
+            # API, so the actual compiler errors are re-emitted as error annotations too.
+            grep -m 8 -E "error:|undefined reference|Error [0-9]" build.log 2>/dev/null |
+              while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
       - name: ccache statistics
@@ -155,6 +159,8 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
             Get-Content build.log -Tail 120 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Select-String -Path build.log -Pattern 'error' | Select-Object -First 8 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
             exit 1
           }
       - name: Validation suite
@@ -225,6 +231,10 @@ jobs:
               tail -n 120 build.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Annotations are the only part of a failure that is always readable through the
+            # API, so the actual compiler errors are re-emitted as error annotations too.
+            grep -m 8 -E "error:|undefined reference|Error [0-9]" build.log 2>/dev/null |
+              while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
       - name: Validation suite
@@ -286,6 +296,8 @@ jobs:
               tail -n 120 build-ios.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            grep -m 8 -E "error:|undefined reference|Error [0-9]" build-ios.log 2>/dev/null |
+              while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
       - name: Validation suite on the simulator
@@ -319,25 +331,38 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
       - name: Compile the shaders
         # glslang-tools provides glslangValidator; glslc lives in a separate package and is not
-        # on every runner (this step used to exit 127 here). Use whichever is present.
+        # on every runner (this step used to exit 127 here). Use whichever is present, keep a
+        # log, and re-emit the first errors as annotations - that is all that survives a run
+        # whose log cannot be downloaded.
         run: |
           mkdir -p android/app/src/main/assets/shaders
+          SHADERS="hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert head.vert
+                   head.frag fullscreen.vert composite.frag bloom.frag shadow.frag taa.frag"
+          compile() {
+            for s in $SHADERS; do
+              echo "== $s"
+              if [ -n "${GLSLC:-}" ]; then
+                glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
+                  -o "android/app/src/main/assets/shaders/$s.spv"
+              else
+                glslangValidator -V --target-env vulkan1.2 -Ishaders "shaders/$s" \
+                  -o "android/app/src/main/assets/shaders/$s.spv"
+              fi
+            done
+          }
           if command -v glslc >/dev/null 2>&1; then
             echo "compiling with glslc"
-            for s in hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert \
-                     head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag \
-                     taa.frag; do
-              glslc --target-env=vulkan1.2 -O -I shaders "shaders/$s" \
-                -o "android/app/src/main/assets/shaders/$s.spv"
-            done
+            GLSLC=1 compile > shader.log 2>&1 || rc=$?
           else
-            echo "compiling with glslangValidator (glslc not installed)"
-            for s in hair.task hair.mesh hair.frag hair_compute.comp hair_draw.vert \
-                     head.vert head.frag fullscreen.vert composite.frag bloom.frag shadow.frag \
-                     taa.frag; do
-              glslangValidator -V --target-env vulkan1.2 -Ishaders "shaders/$s" \
-                -o "android/app/src/main/assets/shaders/$s.spv"
+            echo "compiling with glslangValidator (glslc is not installed)"
+            compile > shader.log 2>&1 || rc=$?
+          fi
+          cat shader.log
+          if [ "${rc:-0}" -ne 0 ]; then
+            grep -m 8 -E "ERROR|error:" shader.log | while IFS= read -r line; do
+              echo "::error::$line"
             done
+            exit "$rc"
           fi
       # Gradle downloads, the wrapper distribution and the NDK are the slow parts of an
       # Android run; none of them change when only C++ sources do, so they get their own
