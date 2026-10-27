@@ -15,7 +15,9 @@ project(silkcrowd_android LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(SILKCROWD_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../..)
+# <repo>/android/app/src/main/cpp, so the repository root is five levels up (this used to
+# be four, which resolved to <repo>/android and made every shared source a missing file).
+set(SILKCROWD_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
 
 add_library(native_app_glue STATIC
   ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
