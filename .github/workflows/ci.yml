@@ -89,6 +89,18 @@ jobs:
           fi
       - name: Unit tests
         run: ./build/silkcrowd_tests
+      - name: Baked blue-noise assets are reproducible
+        # `--bake-noise` must rewrite exactly the files that are checked in: if the generator or
+        # the file format ever drifts from `assets/noise/`, this fails instead of silently
+        # redistributing every hair root in the scene. `--validate` asserts the contents match
+        # the generator bit for bit; this asserts the bytes on disk are current.
+        run: |
+          ./build/SilkCrowd --bake-noise
+          if [ -n "$(git status --porcelain assets/noise)" ]; then
+            git status --porcelain assets/noise
+            echo "::error::assets/noise is stale - commit the output of --bake-noise"
+            exit 1
+          fi
       - name: CPU budget (the paper's per-frame work, phase by phase)
         # Records the numbers docs/CPU_2MS.md talks about on the runner that builds this
         # commit, so a regression in the fast path shows up as a number, not as a hunch. The
@@ -283,6 +295,31 @@ jobs:
         with:
           name: vulkan-info-windows
           path: artifacts/gpu_info.txt
+
+  sanitize:
+    # Nothing here needs Vulkan, Qt or a GPU: the core library is what owns every buffer the
+    # renderers write into, so an instrumented build of it plus the unit tests is the cheapest
+    # thing that can catch an out-of-bounds write or a dangling reference. The first time this
+    # was run by hand it found a real use-after-free (resetSampleSetStats clearing a cache whose
+    # entries the renderers keep references to), which is the whole argument for the job.
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build and run the unit tests with ASan + UBSan
+        run: |
+          set -o pipefail
+          if ! make -j2 sanitize 2>&1 | tee sanitize.log; then
+            {
+              echo '### Sanitizer failure'
+              echo '```'
+              tail -n 120 sanitize.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   macos:
     name: macOS (MoltenVK)

@@ -86,6 +86,7 @@ void printHelp() {
         "  --fast-screenshot <f> render with the fast CPU path instead of the reference one\n"
         "  --screenshot <file>   render one frame to a PNG\n"
         "  --assets              write assets/heads/*.gltf and assets/hairmeshes/*.skhm\n"
+        "  --bake-noise          regenerate the blue-noise sets in assets/noise/*.scbn\n"
         "  --interactive         launch the Qt6 editor (requires a build with Qt6)\n"
         "  --gpu-info            diagnose the Vulkan path: build, loader, driver (ICD), device\n\n"
         "Options:\n"
@@ -147,6 +148,7 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--front-end-only") a.frontEndOnly = true;
         else if (s == "--screenshot") { a.mode = "screenshot"; a.out = next("--screenshot"); }
         else if (s == "--assets") a.mode = "assets";
+        else if (s == "--bake-noise") a.mode = "bake-noise";
         else if (s == "--interactive") a.mode = "interactive";
         else if (s == "--headless") { /* accepted for CI symmetry; the CLI is headless */ }
         else if (s == "--scene") a.scene = next("--scene");
@@ -319,6 +321,43 @@ void validateRoots(Report& r) {
             "sample elimination produces blue noise (not white noise)",
             "mean NN " + std::to_string(mq.meanNearestNeighbor) + " vs " + std::to_string(mq.expectedWhiteNoise));
     r.check(quad.size() == 2048 && tri.size() == 2048, "progressive sets hold the requested sample count");
+
+    // The baked assets in `assets/noise/` must be exactly what the generator produces: a stale or
+    // corrupt file would otherwise silently change the distribution of every root in the scene.
+    // Sets that are not baked at all are fine - they are regenerated at run time.
+    {
+        int baked = 0;
+        double maxDev = 0.0;
+        size_t bakedSamples = 0;
+        for (int i = 0; i < static_cast<int>(NoiseSet::Count); ++i) {
+            const NoiseSet which = static_cast<NoiseSet>(i);
+            const SampleEliminationParams preset = sampleSetPreset(which);
+            SampleSet2D fromDisk;
+            if (!readSampleSet(fromDisk, preset, sampleSetPath(preset, assetPath("noise")))) {
+                continue;
+            }
+            ++baked;
+            bakedSamples += fromDisk.size();
+            const SampleSet2D generated = generateBlueNoiseSamples(preset);
+            if (generated.size() != fromDisk.size()) {
+                maxDev = 1.0;  // cannot happen for a file that validated, but do not assume
+                continue;
+            }
+            for (size_t k = 0; k < generated.size(); ++k) {
+                maxDev = std::max(maxDev, static_cast<double>(
+                                              std::max(std::fabs(generated.samples[k].x - fromDisk.samples[k].x),
+                                                       std::fabs(generated.samples[k].y - fromDisk.samples[k].y))));
+            }
+        }
+        // 1e-6 rather than an exact comparison: a build that contracts a multiply-add (baseline
+        // FMA on arm64) can move a coordinate by an ulp, and that is not a stale asset. A file
+        // baked from different *code* is off by orders of magnitude more; the byte-level rebuild
+        // check lives in CI, where the compiler is fixed.
+        r.check(maxDev <= 1e-6, "baked blue-noise assets match the generator",
+                std::to_string(baked) + "/" + std::to_string(static_cast<int>(NoiseSet::Count)) +
+                    " sets baked, " + std::to_string(bakedSamples) + " samples, max deviation " +
+                    std::to_string(maxDev));
+    }
 
     // Triangle mapping: the bilinear lookup must reproduce barycentric interpolation.
     double maxBaryErr = 0.0;
@@ -1036,6 +1075,24 @@ int main(int argc, char** argv) {
         writeGlif("assets/heads");
         writeHairMeshAssets("assets/hairmeshes");
         return 0;
+    }
+    if (args.mode == "bake-noise") {
+        // Sample elimination is training-time work (~150 ms per 1024-sample set); the renderer
+        // loads these files instead of repeating it on every cold start.
+        const std::string dir = assetPath("noise");
+        const int written = writeBakedSampleSets(dir);
+        const int expected = static_cast<int>(NoiseSet::Count);
+        const SampleSetStats& stats = sampleSetStats();
+        std::printf("baked %d/%d blue-noise sets into %s (%.1f ms generating, %d rejected)\n",
+                    written, expected, dir.c_str(), stats.millisecondsGenerating,
+                    stats.rejectedFiles);
+        for (int i = 0; i < expected; ++i) {
+            const NoiseSet which = static_cast<NoiseSet>(i);
+            const SampleEliminationParams p = sampleSetPreset(which);
+            std::printf("  %-46s %5zu samples -> %s\n", sampleSetPresetName(which),
+                        p.targetCount, sampleSetPath(p, dir).c_str());
+        }
+        return written == expected ? 0 : 1;
     }
     if (args.mode == "interactive") {
         const int rc = runGpuWindow(argc, argv);

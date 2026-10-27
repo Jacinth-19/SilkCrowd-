@@ -68,6 +68,15 @@ target_include_directories(silkcrowd_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/th
 target_compile_definitions(silkcrowd_core PRIVATE
   SILKCROWD_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(silkcrowd_core PRIVATE ${SILKCROWD_WARN_FLAGS})
+# The blue-noise sets are baked into `assets/noise/*.scbn` and `--validate` asserts that the file
+# is what this build's generator produces. Fused multiply-add changes a float result by one ulp,
+# which would make the baked bytes compiler-dependent, so contraction is switched off for the
+# generator (the normalisation above is written so that this costs nothing measurable). MSVC does
+# not contract across statements by default and does not accept the GCC spelling.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(src/core/root_placement.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 # Threads make the crowd passes scale with the core count.
 find_package(Threads QUIET)
 if(Threads_FOUND)

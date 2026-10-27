@@ -181,6 +181,24 @@ make -j                                   # no GPU, no dependencies
 `--fast-screenshot` writes the fast path's own frame (`docs/images/cpu_fast_head.png`): the
 geometry is identical to the reference, the shading is not — see §10.
 
+**Start-up is no longer part of the frame, and no longer paid every run.** Section 3.3's
+progressive sets are produced by sample elimination, which is training-time work: the two sets the
+fast path needs took ~1 s of the process's cold start. They are now baked —
+`./build/SilkCrowd --bake-noise` writes all six sets this repository uses to `assets/noise/*.scbn`
+(92 KB, 8,192 samples, 3.35 s to generate once) and every renderer loads them, rejecting any file
+whose recorded parameters do not match the request. Measured for
+`--cpu-budget --scene head --width 640 --height 360`, wall clock of the whole process:
+
+| | before | after |
+| --- | --- | --- |
+| cold start, 2 runs | 1,821 / 1,668 ms | 730 / 734 ms |
+
+The phases in this document were never affected: the sets were generated in the untimed warm-up.
+`--validate` asserts that every baked file is what this build's generator produces (max coordinate
+deviation, typically 0.000000), and the generator is compiled with `-ffp-contract=off` so that the
+file does not depend on the compiler's FMA policy. The distribution of roots is therefore
+unchanged: the fast path's vertex output still matches its scalar reference with deviation 0.0.
+
 ## 10. Where the fast path deviates (read before comparing images)
 
 | deviation | why | effect on the measurement |

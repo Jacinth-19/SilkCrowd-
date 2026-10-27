@@ -28,7 +28,7 @@ texture eval vs exact Catmull-Rom: max error 0.000331029
   [PASS] u_hat and v_hat are unit vectors (Eq. 1)
   [PASS] w_hat = (u x v)/||u x v|| is well defined (Eq. 4)
   skew (|u_hat . v_hat|, preserved by design): 0.999656
-  Eq. 1-4 frames:  shared bundle edges tested: 840, max frame disagreement = 0.000690534 rad, mean disagreement = 0.000214247 rad
+  Eq. 1-4 frames:  shared bundle edges tested: 840, max frame disagreement = 0.000690534 rad, mean disagreement = 0.000210536 rad
   finite diffs:    shared bundle edges tested: 840, max frame disagreement = 0.407173 rad, mean disagreement = 0.185539 rad
   [PASS] Eq. 1-4 frames are continuous across bundle edges (Figure 4b)  (max 0.000691 rad)
   [PASS] finite differences are discontinuous (reproduces the Figure 4a seam)  (max 0.407173 rad)
@@ -38,6 +38,7 @@ texture eval vs exact Catmull-Rom: max error 0.000331029
   triangle set: mean NN distance 0.0122806 (white noise 0.0110485), NN std-dev 0.00192128, range [0.00478926, 0.0185753], score 0.792282
   [PASS] sample elimination produces blue noise (not white noise)  (mean NN 0.017428 vs 0.011049)
   [PASS] progressive sets hold the requested sample count
+  [PASS] baked blue-noise assets match the generator  (6/6 sets baked, 8192 samples, max deviation 0.000000)
   [PASS] triangle root placement reproduces barycentrics (Section 3.3)  (max error 0.000000)
   mean barycentrics (uniform samples): Barycentric mapping 0.3306/0.3352/0.3343, paper-literal expression 0.4644/0.2013/0.3343 (ideal 0.3333)
   [PASS] no bias towards the duplicated vertex
@@ -57,7 +58,7 @@ texture eval vs exact Catmull-Rom: max error 0.000331029
   [PASS] Eq. 7 detail level falls with distance  (L(0.3m)=1.000000, L(12m)=0.049455)
 
 == Procedural styling (Section 3.4, Figure 10) ==
-  2000 strands x 33 vertices: 27.32 ms with styling, 14.31 ms without (+91%)
+  2000 strands x 33 vertices: 15.01 ms with styling, 13.19 ms without (+14%)
   [PASS] styling operations are applied after base curve generation  (cost measured above)
 
 == Hair mesh simulation (Section 4: XPBD, Wu and Yuksel 2016, Hsu 2022) ==
@@ -93,5 +94,5 @@ texture eval vs exact Catmull-Rom: max error 0.000331029
   [PASS] vertex LOD reduces the generated vertex count  (99307494 vs 330000000 vertices)
 
 =====================================================================
-checks passed: 40, failed: 0
+checks passed: 41, failed: 0
 RESULT: all paper-critical invariants validated

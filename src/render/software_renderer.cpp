@@ -6,24 +6,18 @@
 #include <cstdio>
 #include <sstream>
 
+#include "silkcrowd/assets.h"
 #include "silkcrowd/root_placement.h"
 
 namespace silk {
 namespace {
 
+// One progressive set per domain, shared by every strand and every frame. The sets are baked
+// into `assets/noise/` so a cold run does not pay for the elimination (see root_placement.h).
 const SampleSet2D& sharedSampleSet(bool triangleDomain) {
-    static SampleSet2D quad;
-    static SampleSet2D tri;
-    SampleSet2D& target = triangleDomain ? tri : quad;
-    if (target.size() == 0) {
-        SampleEliminationParams p;
-        p.targetCount = 1024;
-        p.oversample = 3;
-        p.seed = triangleDomain ? 192837465u : 987654321u;
-        p.triangleDomain = triangleDomain;
-        target = generateBlueNoiseSamples(p);
-    }
-    return target;
+    static const SampleSet2D& quad = presetSet(NoiseSet::ReferenceQuad, assetPath("noise"));
+    static const SampleSet2D& tri = presetSet(NoiseSet::ReferenceTriangle, assetPath("noise"));
+    return triangleDomain ? tri : quad;
 }
 
 inline Vec3 transformDir(const Mat4& m, Vec3 v) {

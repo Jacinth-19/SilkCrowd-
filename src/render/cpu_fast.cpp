@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "silkcrowd/assets.h"
 #include "silkcrowd/lod.h"
 #include "silkcrowd/root_placement.h"
 #include "silkcrowd/strand_generator.h"
@@ -150,22 +151,15 @@ inline Vec3 shadeFast(const Scene& scene, Vec3 tangent, Vec3 view, const Vec3& a
 
 // Section 3.3: one progressive blue-noise set per process (any prefix is blue noise), so
 // every bundle and every frame reuses the same table.
+// The elimination itself is training-time work, so the sets are baked into `assets/noise/` and
+// loaded from there; `presetSet` regenerates (and rewrites) them when the asset is missing, which
+// keeps a from-scratch checkout and a packaged install both working.
 const SampleSet2D& quadNoise() {
-    static SampleSet2D set = [] {
-        SampleEliminationParams p;
-        p.targetCount = 1024;
-        return generateBlueNoiseSamples(p);
-    }();
+    static const SampleSet2D& set = presetSet(NoiseSet::FastQuad, assetPath("noise"));
     return set;
 }
 const SampleSet2D& triangleNoise() {
-    static SampleSet2D set = [] {
-        SampleEliminationParams p;
-        p.targetCount = 1024;
-        p.triangleDomain = true;
-        p.seed = 987654u;
-        return generateBlueNoiseSamples(p);
-    }();
+    static const SampleSet2D& set = presetSet(NoiseSet::FastTriangle, assetPath("noise"));
     return set;
 }
 

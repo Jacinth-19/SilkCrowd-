@@ -24,7 +24,7 @@ CORE_OBJ := $(patsubst src/%.cpp,$(BUILD)/%.o,$(CORE_SRC))
 APP_OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(APP_SRC))
 TEST_OBJ := $(patsubst tests/%.cpp,$(BUILD)/tests/%.o,$(TESTS_SRC))
 
-.PHONY: all clean validate test bench run gpu-selftest
+.PHONY: all clean validate test bench run gpu-selftest sanitize
 
 all: $(BUILD)/SilkCrowd $(BUILD)/silkcrowd_tests
 
@@ -35,6 +35,10 @@ $(BUILD)/SilkCrowd: $(CORE_OBJ) $(APP_OBJ)
 $(BUILD)/silkcrowd_tests: $(CORE_OBJ) $(TEST_OBJ)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+# root_placement.cpp generates the blue-noise sets that are baked into assets/noise/*.scbn;
+# switching off FMA contraction keeps those files identical across compilers (see CMakeLists.txt).
+$(BUILD)/core/root_placement.o: CXXFLAGS += -ffp-contract=off
 
 $(BUILD)/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
@@ -50,6 +54,18 @@ $(BUILD)/tests/%.o: tests/%.cpp
 
 test: $(BUILD)/silkcrowd_tests
 	./$(BUILD)/silkcrowd_tests
+
+# AddressSanitizer + UndefinedBehaviorSanitizer over the core library and the tests. One
+# translation unit command instead of per-object rules so that `make sanitize` never reuses an
+# unsanitised object file. -ffp-contract=off keeps the blue-noise generator matching the baked
+# assets in assets/noise/, which --validate checks.
+SANFLAGS ?= -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Wall -Wextra -Wno-unused-parameter -Iinclude -Ithird_party/stb \
+            -DSILKCROWD_SOURCE_DIR='"$(CURDIR)"' -ffp-contract=off
+sanitize:
+	@mkdir -p $(BUILD)/san
+	$(CXX) $(SANFLAGS) -o $(BUILD)/san/silkcrowd_tests $(CORE_SRC) $(TESTS_SRC) $(LDFLAGS)
+	./$(BUILD)/san/silkcrowd_tests
 
 validate: $(BUILD)/SilkCrowd
 	./$(BUILD)/SilkCrowd --validate --report docs/validation_report.txt

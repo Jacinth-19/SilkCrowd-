@@ -2,6 +2,7 @@
 // Build:  make test        (no external dependencies)
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -217,6 +218,135 @@ void testRootPlacement() {
     CHECK(m.meanNearestNeighbor > m.expectedWhiteNoise * 1.15);
     // Progressive: every sample is inside the unit square.
     for (const Vec2& s : set.samples) CHECK(s.x >= 0 && s.x <= 1 && s.y >= 0 && s.y <= 1);
+}
+
+void testBakedSampleSets() {
+    std::printf("baked blue-noise assets (sample sets written to disk)\n");
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "silkcrowd_noise_test";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const std::string dirStr = dir.string();
+
+    // 1. Round trip: what comes back is what went in, sample for sample.
+    SampleEliminationParams p;
+    p.targetCount = 256;
+    p.oversample = 2;
+    p.seed = 4242u;
+    const SampleSet2D original = generateBlueNoiseSamples(p);
+    const std::string path = sampleSetPath(p, dirStr);
+    CHECK(writeSampleSet(original, p, path));
+    SampleSet2D loaded;
+    CHECK(readSampleSet(loaded, p, path));
+    CHECK(loaded.size() == original.size());
+    CHECK(loaded.triangleDomain == original.triangleDomain);
+    bool identical = loaded.size() == original.size();
+    for (size_t i = 0; i < loaded.size() && i < original.size(); ++i) {
+        identical = identical && loaded.samples[i].x == original.samples[i].x &&
+                    loaded.samples[i].y == original.samples[i].y;
+    }
+    CHECK(identical);
+
+    // 2. The triangle domain survives the round trip, and its coordinates stay inside the
+    //    triangle (a set that does not is rejected by the loader).
+    SampleEliminationParams tp = p;
+    tp.triangleDomain = true;
+    tp.seed = 77u;
+    const SampleSet2D triOriginal = generateBlueNoiseSamples(tp);
+    const std::string triPath = sampleSetPath(tp, dirStr);
+    CHECK(writeSampleSet(triOriginal, tp, triPath));
+    SampleSet2D triLoaded;
+    CHECK(readSampleSet(triLoaded, tp, triPath));
+    CHECK(triLoaded.triangleDomain);
+    bool insideTriangle = true;
+    for (const Vec2& s : triLoaded.samples) insideTriangle = insideTriangle && s.x + s.y <= 1.0001f;
+    CHECK(insideTriangle);
+    // A quad-domain reader must refuse a triangle-domain file, and vice versa.
+    SampleSet2D wrongDomain;
+    CHECK(!readSampleSet(wrongDomain, p, triPath));
+    SampleSet2D wrongDomain2;
+    CHECK(!readSampleSet(wrongDomain2, tp, path));
+
+    // 3. Parameter mismatch (a stale bake) is rejected rather than trusted.
+    SampleEliminationParams other = p;
+    other.seed = p.seed + 1u;
+    SampleSet2D stale;
+    CHECK(!readSampleSet(stale, other, path));
+    SampleEliminationParams otherCount = p;
+    otherCount.targetCount = 128;
+    SampleSet2D resized;
+    CHECK(!readSampleSet(resized, otherCount, path));
+
+    // 4. Garbage, truncation and a missing file all fail without touching the caller's set.
+    const std::string junkPath = dirStr + "/junk.scbn";
+    {
+        std::FILE* f = std::fopen(junkPath.c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            const char junk[64] = {'N', 'O', 'T', 'A', 'S', 'E', 'T'};
+            std::fwrite(junk, 1, sizeof(junk), f);
+            std::fclose(f);
+        }
+    }
+    SampleSet2D untouched;
+    CHECK(!readSampleSet(untouched, p, junkPath));
+    CHECK(untouched.size() == 0);
+    CHECK(!readSampleSet(untouched, p, dirStr + "/does_not_exist.scbn"));
+    {
+        // Header only, no samples: valid magic and parameters, wrong length.
+        std::FILE* f = std::fopen((dirStr + "/truncated.scbn").c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            std::fwrite("SCBN", 1, 4, f);
+            std::fclose(f);
+        }
+    }
+    SampleSet2D truncated;
+    CHECK(!readSampleSet(truncated, p, dirStr + "/truncated.scbn"));
+
+    // 5. The process cache: same parameters give the same object, and a cold cache really does
+    //    read the file back (the second call is served from disk, not from the generator).
+    resetSampleSetStats();
+    const SampleSet2D& first = presetSet(NoiseSet::ReferenceQuad, dirStr);
+    const SampleSet2D& second = presetSet(NoiseSet::ReferenceQuad, dirStr);
+    CHECK(&first == &second);
+    const size_t firstSize = first.size();  // the reference stays valid across a stats reset
+    CHECK(sampleSetStats().loadedFromDisk == 0);   // first call generated and wrote it
+    CHECK(sampleSetStats().generated == 1);
+    CHECK(sampleSetStats().writeFailures == 0);
+    resetSampleSetStats();
+    // The cache is never cleared (renderers hold references into it), so a disk load is tested
+    // with parameters that are not cached yet: bake them by hand, then ask the cache for them.
+    SampleEliminationParams fresh;
+    fresh.targetCount = 128;
+    fresh.oversample = 2;
+    fresh.seed = 90210u;
+    CHECK(writeSampleSet(generateBlueNoiseSamples(fresh), fresh, sampleSetPath(fresh, dirStr)));
+    const SampleSet2D& reloaded = blueNoiseSet(fresh, dirStr);
+    CHECK(sampleSetStats().loadedFromDisk == 1);
+    CHECK(sampleSetStats().generated == 0);
+    CHECK(reloaded.size() == 128);
+    CHECK(&first != &reloaded);  // still the cached ReferenceQuad set, untouched
+    CHECK(first.size() == firstSize);
+    const SampleSet2D reference = generateBlueNoiseSamples(fresh);
+    CHECK(reference.size() == reloaded.size());
+    bool sameAsGenerator = reference.size() == reloaded.size();
+    for (size_t i = 0; i < reference.size() && i < reloaded.size(); ++i) {
+        sameAsGenerator = sameAsGenerator && reference.samples[i].x == reloaded.samples[i].x &&
+                          reference.samples[i].y == reloaded.samples[i].y;
+    }
+    CHECK(sameAsGenerator);
+    // 6. An unwritable directory is not an error: it degrades to regeneration.
+    resetSampleSetStats();
+    const std::string missingDir = dirStr + "/nested/does/not/exist";
+    const SampleSet2D& degraded = presetSet(NoiseSet::FastQuad, missingDir);
+    CHECK(degraded.size() == 1024);
+    CHECK(sampleSetStats().writeFailures == 1);
+    CHECK(sampleSetStats().generated == 1);
+
+    std::filesystem::remove_all(dir, ec);
+    resetSampleSetStats();
 }
 
 void testLod() {
@@ -556,6 +686,7 @@ int main() {
     testTextureLayout();
     testFrames();
     testRootPlacement();
+    testBakedSampleSets();
     testLod();
     testStrandGeneration();
     testTriangleBundle();

@@ -35,6 +35,67 @@ struct SampleEliminationParams {
 // progressive blue noise sequence of `targetCount` samples.
 SampleSet2D generateBlueNoiseSamples(const SampleEliminationParams& p);
 
+// ---------------------------------------------------------------------------
+//  Baked sample sets
+// ---------------------------------------------------------------------------
+// Sample elimination is *training-time* work: ~150 ms for a 1024-sample set, and the renderer
+// asks for two of them before it draws anything. A shipped app should load them instead, so a
+// set can be written to `assets/noise/` and read back. The file records the parameters it was
+// generated from and the loader rejects any set whose parameters do not match, so a stale file
+// costs a regeneration, never a wrong distribution.
+//
+// File layout (little-endian; every platform this builds on is little-endian, and the magic
+// plus the parameter block make a big-endian file fail to load rather than decode wrongly):
+//   "SCBN" | u32 version | u32 targetCount | u32 oversample | u32 weightExponentBits |
+//   u32 seed | u32 flags (bit0 = triangleDomain) | u32 sampleCount | sampleCount * (f32 x, f32 y)
+uint64_t sampleSetKey(const SampleEliminationParams& p);
+bool writeSampleSet(const SampleSet2D& set, const SampleEliminationParams& p,
+                    const std::string& path);
+bool readSampleSet(SampleSet2D& set, const SampleEliminationParams& p, const std::string& path);
+
+// Process-wide cache in front of the above: returns the set for `p`, loading it from
+// `cacheDir` when that directory is non-empty and the file exists, otherwise generating it and
+// writing it there (best effort - an unwritable directory is not an error). Pass an empty
+// `cacheDir` to stay entirely in memory. The returned reference stays valid for the process.
+const SampleSet2D& blueNoiseSet(const SampleEliminationParams& p,
+                                const std::string& cacheDir = std::string());
+
+// The path `blueNoiseSet` uses for `p` inside `cacheDir`.
+std::string sampleSetPath(const SampleEliminationParams& p, const std::string& cacheDir);
+
+// The sets this repository actually asks for, named so that the bake step and the renderers
+// cannot drift apart: `--bake-noise` writes exactly these, and each renderer asks for its own.
+enum class NoiseSet {
+    FastQuad,        // fast CPU path (src/render/cpu_fast.cpp), 1024 samples
+    FastTriangle,    // fast CPU path, triangle domain, 1024 samples
+    ReferenceQuad,   // reference software renderer, 1024 samples, oversample 3
+    ReferenceTriangle,
+    GpuQuad,         // Vulkan path, 2048 samples
+    GpuTriangle,
+    Count
+};
+SampleEliminationParams sampleSetPreset(NoiseSet which);
+const char* sampleSetPresetName(NoiseSet which);
+// `blueNoiseSet(sampleSetPreset(which), cacheDir)`.
+const SampleSet2D& presetSet(NoiseSet which, const std::string& cacheDir = std::string());
+// Writes every preset into `dir` (creating it), regenerating as needed. Returns how many files
+// were written; a partial result is possible if the directory cannot be created.
+int writeBakedSampleSets(const std::string& dir);
+
+// Number of sample sets served from disk / generated this process (for `--validate` and tests).
+struct SampleSetStats {
+    int loadedFromDisk = 0;
+    int generated = 0;
+    int writeFailures = 0;
+    int rejectedFiles = 0;
+    double millisecondsGenerating = 0.0;
+};
+const SampleSetStats& sampleSetStats();
+// Resets the counters only. The cached sets stay alive: `blueNoiseSet` and `presetSet` hand out
+// references, and the renderers keep them in static locals, so the cache must never be cleared
+// underneath a caller (an AddressSanitizer run caught exactly that when it was).
+void resetSampleSetStats();
+
 // Blue noise quality metrics (used by the validation suite / README chart).
 struct BlueNoiseMetrics {
     double meanNearestNeighbor = 0.0;   // in the unit square

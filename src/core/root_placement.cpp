@@ -1,8 +1,15 @@
 #include "silkcrowd/root_placement.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <queue>
 #include <sstream>
 
@@ -203,6 +210,251 @@ Vec2 rootPlacementTriangle(Vec2 xi, TriangleMapping mapping) {
         return Vec2(s * (1.0f - t), t);
     }
     return Vec2(s / denom, t);
+}
+
+// ---------------------------------------------------------------------------
+//  Baked sample sets (see the header for the file layout)
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr uint32_t kSampleSetVersion = 1u;
+constexpr char kSampleSetMagic[4] = {'S', 'C', 'B', 'N'};
+constexpr uint32_t kFlagTriangle = 1u;
+constexpr uint32_t kMaxSamples = 1u << 20;
+
+SampleSetStats g_stats;
+std::mutex g_cacheMutex;
+std::map<uint64_t, SampleSet2D> g_cache;
+
+inline uint32_t floatBits(float f) {
+    uint32_t u = 0;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+}
+inline float bitsFloat(uint32_t u) {
+    float f = 0.0f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+void hashBytes(uint64_t& h, const void* data, size_t bytes) {
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < bytes; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ull;  // FNV-1a
+    }
+}
+
+bool sameParams(const SampleEliminationParams& a, const SampleEliminationParams& b) {
+    return a.targetCount == b.targetCount && a.oversample == b.oversample &&
+           a.weightExponent == b.weightExponent && a.seed == b.seed &&
+           a.triangleDomain == b.triangleDomain;
+}
+
+// A loaded set is only trusted if it is well formed: the right count, finite coordinates in the
+// unit square (and in the triangle when the set says so).
+bool validateSamples(const SampleSet2D& set, const SampleEliminationParams& p) {
+    if (set.samples.size() != std::min<size_t>(p.targetCount, kMaxSamples)) return false;
+    if (set.triangleDomain != p.triangleDomain) return false;
+    for (const Vec2& s : set.samples) {
+        if (!std::isfinite(s.x) || !std::isfinite(s.y)) return false;
+        if (s.x < 0.0f || s.x > 1.0f || s.y < 0.0f || s.y > 1.0f) return false;
+        if (p.triangleDomain && s.x + s.y > 1.0001f) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+uint64_t sampleSetKey(const SampleEliminationParams& p) {
+    uint64_t h = 1469598103934665603ull;
+    hashBytes(h, &p.targetCount, sizeof(p.targetCount));
+    hashBytes(h, &p.oversample, sizeof(p.oversample));
+    const uint32_t we = floatBits(p.weightExponent);
+    hashBytes(h, &we, sizeof(we));
+    hashBytes(h, &p.seed, sizeof(p.seed));
+    const unsigned char tri = p.triangleDomain ? 1u : 0u;
+    hashBytes(h, &tri, sizeof(tri));
+    return h;
+}
+
+std::string sampleSetPath(const SampleEliminationParams& p, const std::string& cacheDir) {
+    char name[64];
+    std::snprintf(name, sizeof(name), "bn_%016llx.scbn",
+                  static_cast<unsigned long long>(sampleSetKey(p)));
+    if (cacheDir.empty()) return std::string(name);
+    std::string dir = cacheDir;
+    if (dir.back() != '/') dir.push_back('/');
+    return dir + name;
+}
+
+bool writeSampleSet(const SampleSet2D& set, const SampleEliminationParams& p,
+                    const std::string& path) {
+    if (set.samples.size() > kMaxSamples) return false;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.good()) return false;
+    const uint32_t header[7] = {kSampleSetVersion,
+                                static_cast<uint32_t>(p.targetCount),
+                                static_cast<uint32_t>(p.oversample),
+                                floatBits(p.weightExponent),
+                                p.seed,
+                                p.triangleDomain ? kFlagTriangle : 0u,
+                                static_cast<uint32_t>(set.samples.size())};
+    out.write(kSampleSetMagic, sizeof(kSampleSetMagic));
+    out.write(reinterpret_cast<const char*>(header), sizeof(header));
+    // Two float32 per sample, explicitly little-endian so a big-endian host writes a file that
+    // still round-trips (it would fail the magic check rather than silently decode).
+    for (const Vec2& s : set.samples) {
+        const float xy[2] = {s.x, s.y};
+        out.write(reinterpret_cast<const char*>(xy), sizeof(xy));
+    }
+    out.flush();
+    return out.good();
+}
+
+bool readSampleSet(SampleSet2D& set, const SampleEliminationParams& p, const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.good()) return false;
+    char magic[4] = {0, 0, 0, 0};
+    in.read(magic, sizeof(magic));
+    if (!in.good() || std::memcmp(magic, kSampleSetMagic, sizeof(magic)) != 0) {
+        ++g_stats.rejectedFiles;
+        return false;
+    }
+    uint32_t header[7] = {0, 0, 0, 0, 0, 0, 0};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (!in.good()) {
+        ++g_stats.rejectedFiles;
+        return false;
+    }
+    SampleEliminationParams stored;
+    stored.targetCount = header[1];
+    stored.oversample = header[2];
+    stored.weightExponent = bitsFloat(header[3]);
+    stored.seed = header[4];
+    stored.triangleDomain = (header[5] & kFlagTriangle) != 0u;
+    const uint32_t count = header[6];
+    if (header[0] != kSampleSetVersion || count == 0u || count > kMaxSamples ||
+        !sameParams(stored, p)) {
+        ++g_stats.rejectedFiles;
+        return false;
+    }
+    SampleSet2D loaded;
+    loaded.triangleDomain = stored.triangleDomain;
+    loaded.samples.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        float xy[2] = {0.0f, 0.0f};
+        in.read(reinterpret_cast<char*>(xy), sizeof(xy));
+        if (!in.good()) {
+            ++g_stats.rejectedFiles;
+            return false;
+        }
+        loaded.samples[i] = Vec2(xy[0], xy[1]);
+    }
+    if (!validateSamples(loaded, p)) {
+        ++g_stats.rejectedFiles;
+        return false;
+    }
+    set = std::move(loaded);
+    ++g_stats.loadedFromDisk;
+    return true;
+}
+
+const SampleSet2D& blueNoiseSet(const SampleEliminationParams& p, const std::string& cacheDir) {
+    const uint64_t key = sampleSetKey(p);
+    std::lock_guard<std::mutex> lock(g_cacheMutex);
+    auto it = g_cache.find(key);
+    if (it != g_cache.end()) return it->second;
+
+    SampleSet2D set;
+    bool have = false;
+    if (!cacheDir.empty()) have = readSampleSet(set, p, sampleSetPath(p, cacheDir));
+    if (!have) {
+        const auto start = std::chrono::steady_clock::now();
+        set = generateBlueNoiseSamples(p);
+        const auto end = std::chrono::steady_clock::now();
+        g_stats.millisecondsGenerating +=
+            std::chrono::duration<double, std::milli>(end - start).count();
+        ++g_stats.generated;
+        if (!cacheDir.empty() && !writeSampleSet(set, p, sampleSetPath(p, cacheDir))) {
+            ++g_stats.writeFailures;  // read-only install: regenerate next time, no error
+        }
+    }
+    return g_cache.emplace(key, std::move(set)).first->second;
+}
+
+SampleEliminationParams sampleSetPreset(NoiseSet which) {
+    SampleEliminationParams p;
+    switch (which) {
+        case NoiseSet::FastQuad:
+            p.targetCount = 1024;
+            break;
+        case NoiseSet::FastTriangle:
+            p.targetCount = 1024;
+            p.triangleDomain = true;
+            p.seed = 987654u;
+            break;
+        case NoiseSet::ReferenceQuad:
+            p.targetCount = 1024;
+            p.oversample = 3;
+            p.seed = 987654321u;
+            break;
+        case NoiseSet::ReferenceTriangle:
+            p.targetCount = 1024;
+            p.oversample = 3;
+            p.seed = 192837465u;
+            p.triangleDomain = true;
+            break;
+        case NoiseSet::GpuQuad:
+            p.targetCount = 2048;
+            break;
+        case NoiseSet::GpuTriangle:
+            p.targetCount = 2048;
+            p.triangleDomain = true;
+            p.seed = 987654321u;
+            break;
+        case NoiseSet::Count:
+            break;
+    }
+    return p;
+}
+
+const char* sampleSetPresetName(NoiseSet which) {
+    switch (which) {
+        case NoiseSet::FastQuad: return "fast CPU path, quad domain";
+        case NoiseSet::FastTriangle: return "fast CPU path, triangle domain";
+        case NoiseSet::ReferenceQuad: return "reference software renderer, quad domain";
+        case NoiseSet::ReferenceTriangle: return "reference software renderer, triangle domain";
+        case NoiseSet::GpuQuad: return "Vulkan path, quad domain";
+        case NoiseSet::GpuTriangle: return "Vulkan path, triangle domain";
+        case NoiseSet::Count: break;
+    }
+    return "unknown";
+}
+
+const SampleSet2D& presetSet(NoiseSet which, const std::string& cacheDir) {
+    return blueNoiseSet(sampleSetPreset(which), cacheDir);
+}
+
+int writeBakedSampleSets(const std::string& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    int written = 0;
+    for (int i = 0; i < static_cast<int>(NoiseSet::Count); ++i) {
+        const NoiseSet which = static_cast<NoiseSet>(i);
+        const SampleEliminationParams p = sampleSetPreset(which);
+        const SampleSet2D& set = presetSet(which);
+        if (writeSampleSet(set, p, sampleSetPath(p, dir))) ++written;
+    }
+    return written;
+}
+
+const SampleSetStats& sampleSetStats() { return g_stats; }
+
+void resetSampleSetStats() {
+    // Counters only: see the header. `g_cache` is deliberately left alone.
+    std::lock_guard<std::mutex> lock(g_cacheMutex);
+    g_stats = SampleSetStats{};
 }
 
 void triangleBarycentricsFromBlock(Vec2 ab, float* b0, float* b1, float* b2) {

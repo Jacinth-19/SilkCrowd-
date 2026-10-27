@@ -38,7 +38,7 @@ printed warning or a flag.
 | 2.7 **[D]** | Tighter texture packing (the paper's 200 teapots fit in 3.2 MB) | **30.2 MB** for the same 200 teapots: every bundle gets a full 2×2 block on every slice | fixed-size blocks are what makes the texel addressing branch-free; a size-class layout is the fix | a variable-size block layout + a per-bundle size class |
 | 2.8 **[D]** | The printed triangle→block mapping of Section 3.3 | default is the *barycentric* mapping; the printed expression is available as `TriangleMapping::PaperLiteral` and both are measured in `--validate` (the printed one biases roots toward the duplicated corner) | the printed expression does not reproduce barycentric interpolation; see `docs/PAPER_MAPPING.md` | nothing — it is a parameter |
 | 2.9 **[T]** | Temporal LOD stabilisation beyond δᵢ and γ | Eq. 8's per-bundle δ and Eq. 12's γ are implemented; there is **no extra hysteresis state** | the paper describes exactly these two mechanisms; TAA absorbs the residual | optional: a per-bundle hysteresis term |
-| 2.10 **[T]** | The progressive blue-noise sets as a precomputed asset | generated at run time by sample elimination, once per process (**~300 ms** for both sets: 1024 samples, 4× oversample) | it is training-time work that a shipped app would bake into an asset | write the sets to `assets/` and load them |
+| 2.10 **[—]** | The progressive blue-noise sets as a precomputed asset | **closed since this list was written**: `--bake-noise` writes all six sets to `assets/noise/*.scbn` (92 KB, 8,192 samples) and the renderer loads them, verifying the parameters before trusting a file. Measured: cold start `--cpu-budget --scene head --width 640 --height 360` **1,668-1,821 ms → 730-734 ms**; `--validate` asserts the baked sets are what the generator produces (max deviation printed), and CI re-runs `--bake-noise` and requires the checked-in bytes to be unchanged | — | — |
 | 2.11 **[T]** | SIMD / bundle-coherent CPU evaluation | the fast CPU path is **scalar**; the single biggest remaining win (§11 of `docs/CPU_2MS.md`) is evaluating 8–16 strands per pass over the *same* 2×2 texel block | time; it is a substantial kernel rewrite | a 16-wide kernel per bundle, with the taps loaded once |
 | 2.12 **[T]** | GPU counterpart of the fast path | `--cpu-budget` is CPU only; there is no `--gpu-budget` profiling split of the Vulkan path | the Vulkan path can only be timed in CI, and only as a whole frame | timestamp queries per pass on real hardware |
 | 2.13 **[T]** | Mesh-shader workgroup tuning against the paper's numbers | the local size is chosen so that one lane writes one ribbon vertex (32 vertices per workgroup); it is **not** tuned against measured hardware throughput | no device to tune on | a GPU + a sweep of `local_size_x` |
@@ -80,6 +80,9 @@ the sandbox. The images are what that costs:
   source, the Android APK, and CI on five platforms.
 * **Not implemented**: hand-authored meshes and their editing UI, per-strand shadow rays, a
   tighter texture packing, SIMD, GPU-side phase profiling, and (unverifiable here) the paper's
-  GPU timings, its 8× MSAA look and its on-device Android frame.
+  GPU timings, its 8× MSAA look and its on-device Android frame. The baked blue-noise asset used
+  to be on this list and is not any more (2.10).
+* **Next up**: `docs/ROADMAP.md` is the merged, prioritised list of everything above plus the
+  upgrades that are not in the paper.
 * **Not possible here**: 2 ms on two cores. Measured: 24.8 s for the same scene, 1.12 ms for
   the part of the frame that is CPU work.

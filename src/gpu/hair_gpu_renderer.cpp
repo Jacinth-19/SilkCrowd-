@@ -10,6 +10,7 @@
 #include <fstream>
 #include <vector>
 
+#include "silkcrowd/assets.h"
 #include "silkcrowd/image.h"
 #include "silkcrowd/root_placement.h"
 
@@ -2227,15 +2228,9 @@ bool HairGpuRenderer::init(VulkanContext* context, uint32_t width, uint32_t heig
 
     // ---- progressive blue-noise root sample tables (Yuksel 2015, Section 3.3) ----
     {
-        SampleEliminationParams qp;
-        qp.targetCount = 2048;
-        qp.triangleDomain = false;
-        const SampleSet2D quads = generateBlueNoiseSamples(qp);
-        SampleEliminationParams tp;
-        tp.targetCount = 2048;
-        tp.triangleDomain = true;
-        tp.seed = 987654321u;
-        const SampleSet2D tris = generateBlueNoiseSamples(tp);
+        // Baked into `assets/noise/` (see root_placement.h): elimination is training-time work.
+        const SampleSet2D& quads = presetSet(NoiseSet::GpuQuad, assetPath("noise"));
+        const SampleSet2D& tris = presetSet(NoiseSet::GpuTriangle, assetPath("noise"));
 
         auto upload = [&](const std::vector<Vec2>& pts, VkBuffer* buffer, VkDeviceMemory* memory) {
             const VkDeviceSize bytes = VkDeviceSize(pts.size()) * sizeof(Vec2);

@@ -216,6 +216,14 @@ rays, fixed-size texture blocks instead of the paper's tighter packing, a baryce
 mapping instead of the printed expression). Nothing in it is a surprise discovered by reading
 the code - each deviation is a named parameter, a printed warning or a flag.
 
+**`docs/ROADMAP.md` is the merged list:** every open paper item, every item above, and every
+upgrade that is not in the paper at all (SIMD, `--gpu-budget` timestamps, variable-size texture
+blocks, TAA/LOD hysteresis, a Qt6 editor, more silhouettes, fuzzing, golden images) as 48
+prioritised rows with an effort, a risk and the command that proves each one. Two rows were
+closed in the same commit that wrote it: the blue-noise sets are now baked assets
+(`--bake-noise`, cold start 1,668-1,821 ms -> 730-734 ms) and `make sanitize` runs the whole
+unit suite under ASan + UBSan.
+
 ### The workloads, rendered
 
 ![Crowd of 100 heads](docs/images/crowd_100_linux.png)
@@ -535,9 +543,11 @@ Android APK gate.
 | GNU Make, Release (`-O2 -g -Wall -Wextra`) | `make -j2` | 0 warnings, binary + tests |
 | CMake + Ninja, Release, `SILKCROWD_STRICT=ON` (`-Werror`) | `cmake -B build -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON && cmake --build build` | 0 warnings, 0 errors |
 | CTest | `ctest` in the build tree | **2/2** (`unit_tests`, `validation`) |
-| Unit tests | `./build/silkcrowd_tests` | **3317 checks, 0 failures** |
-| Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
+| Unit tests | `./build/silkcrowd_tests` | **3351 checks, 0 failures** |
+| Paper invariants | `./build/SilkCrowd --validate` | **41 passed, 0 failed** |
+| AddressSanitizer + UndefinedBehaviorSanitizer | `make sanitize` | **3351 checks, 0 failures**, no leaks (93 s) |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
+| Baked blue-noise sets | `./build/SilkCrowd --bake-noise` | 6 sets, 8,192 samples, 92 KB in `assets/noise/`; cold start **1,668-1,821 ms -> 730-734 ms** |
 | Shaders | `glslang` 16 (SPIR-V) | **12/12** compile; every `.spv` starts with the SPIR-V magic. The previous "10 of 12" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
 | Android APK | `./gradlew assembleDebug` (NDK 26.1, CMake 3.22, AGP 8.5.2) in CI | **builds**: `libsilkcrowd.so` for `arm64-v8a` + `x86_64`, 12 SPIR-V modules in `assets/shaders`, per-ABI link clean |
 | Fast CPU path | `--cpu-budget --scene crowd --crowd 100 --front-end-only` | **1.12 ms** for 4,130 bundles; whole frame 24,832 ms (`docs/CPU_2MS.md`) |
@@ -556,7 +566,7 @@ shaders/               GLSL: hair_common.glsl, hair.task, hair.mesh, hair.frag,
                        hair_compute.comp, hair_draw.vert, head.*, composite, bloom, shadow
 src/app/               CLI, scenes, asset export, Vulkan screenshot entry, Qt6 editor,
                        Vulkan diagnostics (gpu_probe.cpp, --gpu-info)
-tests/                 unit tests (3317 checks)
+tests/                 unit tests (3351 checks)
 tools/                 README compositor, asset helpers, GPU diagnostic self-test
 docs/GPU.md            Vulkan: the four things that can be missing, and how to install each
 android/               NDK + Gradle project (NativeActivity, Vulkan surface + swapchain)
