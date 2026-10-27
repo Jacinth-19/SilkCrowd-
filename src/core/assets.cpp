@@ -908,7 +908,6 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
     // starts exactly on the pole collapses its top row into zero-area quads; a patch that
     // starts off the pole leaves a bald spot; the fan is the only way to have both an even
     // grid below and no hole above.
-    const float kApexPhi = patch.phiMin;   // 0: the patch starts on the pole
     // `surfacePoint(theta, 0)` has to fall back to the procedural ellipsoid for a scanned
     // head (there is no radial sample exactly at the pole), and that fallback is about a
     // centimetre inside the scan's crown -- so the top row of roots sank *below* the scalp

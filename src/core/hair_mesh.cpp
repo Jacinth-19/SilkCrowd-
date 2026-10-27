@@ -54,11 +54,10 @@ void HairMesh::setAreaWeightedStrandCount(uint32_t total) {
         return;
     }
 
-    // Largest-remainder allocation: exact total, and every face above a twentieth of the
-    // mean area gets at least one strand so no hole opens in the surface.
+    // Largest-remainder allocation: exact total, and every face gets at least half the
+    // uniform count so no hole opens in the surface.
     std::vector<double> exact(n, 0.0);
     std::vector<uint32_t> count(n, 0);
-    const double meanArea = areaSum / static_cast<double>(n);
     uint32_t assigned = 0;
     for (size_t i = 0; i < n; ++i) {
         exact[i] = static_cast<double>(total) * area[i] / areaSum;

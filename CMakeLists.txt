@@ -33,6 +33,7 @@ add_library(silkcrowd_core STATIC
   src/core/hair_mesh.cpp
   src/core/hair_mesh_texture.cpp
   src/core/gltf.cpp
+  src/core/gpu_diag.cpp
   src/core/image.cpp
   src/core/image_decode.cpp
   src/core/lod.cpp
