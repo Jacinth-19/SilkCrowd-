@@ -66,7 +66,7 @@ target_include_directories(silkcrowd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc
 target_include_directories(silkcrowd_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
 target_compile_definitions(silkcrowd_core PRIVATE
   SILKCROWD_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(silkcrowd_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_compile_options(silkcrowd_core PRIVATE ${SILKCROWD_WARN_FLAGS})
 # Threads make the crowd passes scale with the core count.
 find_package(Threads QUIET)
 if(Threads_FOUND)

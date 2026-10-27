@@ -45,6 +45,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
+#include <QVulkanFunctions>
 #include <QVulkanInstance>
 #include <QVulkanWindow>
 
@@ -135,6 +136,8 @@ class HairVulkanWindow : public QVulkanWindow {
 public:
     explicit HairVulkanWindow(EditorState* state) : state_(state) {}
     QVulkanWindowRenderer* createRenderer() override;
+    // QVulkanWindow does not expose its renderer, and reloadScene() has to reach it.
+    HairVulkanRenderer* hairRenderer() const { return renderer_; }
     const GpuStats* stats() const { return stats_; }
     void reloadScene(int sceneIndex);
     void setStatsPtr(const GpuStats* s) { stats_ = s; }
@@ -150,6 +153,7 @@ protected:
 
 private:
     EditorState* state_;
+    HairVulkanRenderer* renderer_ = nullptr;   // owned by QVulkanWindow
     const GpuStats* stats_ = nullptr;
     QPoint lastPos_;
     bool orbiting_ = false, panning_ = false;
@@ -193,8 +197,9 @@ void HairVulkanRenderer::initResources() {
     VkCommandPool pool = window_->graphicsCommandPool();
 
     std::string error;
+    // QVulkanWindow exposes a single queue family: graphics and present are the same one.
     if (!context_.adopt(instance, physical, device, gfx, window_->presentQueue(),
-                        window_->graphicsQueueFamilyIndex(), window_->presentQueueFamilyIndex(),
+                        window_->graphicsQueueFamilyIndex(), window_->graphicsQueueFamilyIndex(),
                         pool, true, &error)) {
         std::fprintf(stderr, "[SilkCrowd] VulkanContext::adopt failed: %s\n", error.c_str());
         return;
@@ -239,9 +244,10 @@ void HairVulkanRenderer::initSwapChainResources() {
 }
 
 void HairVulkanRenderer::releaseSwapChainResources() {
+    QVulkanFunctions* vk = window_->vulkanInstance()->functions();
     for (auto& entry : swapchainViews_)
         if (entry.second != VK_NULL_HANDLE)
-            vkDestroyImageView(context_.device(), entry.second, nullptr);
+            vk->vkDestroyImageView(context_.device(), entry.second, nullptr);
     swapchainViews_.clear();
 }
 
@@ -249,12 +255,16 @@ VkImageView HairVulkanRenderer::swapchainView(VkImage image) {
     for (const auto& entry : swapchainViews_)
         if (entry.first == image) return entry.second;
     VkImageView view = VK_NULL_HANDLE;
-    VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    VkImageViewCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     ci.image = image;
     ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     ci.format = window_->colorFormat();
     ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(context_.device(), &ci, nullptr, &view) != VK_SUCCESS) {
+    // Qt resolves the Vulkan entry points at run time and does not expose the prototypes, so
+    // device-level calls have to go through QVulkanInstance::functions().
+    QVulkanFunctions* vk = window_->vulkanInstance()->functions();
+    if (vk->vkCreateImageView(context_.device(), &ci, nullptr, &view) != VK_SUCCESS) {
         std::fprintf(stderr, "[SilkCrowd] could not create a view for the swapchain image\n");
         return VK_NULL_HANDLE;
     }
@@ -292,7 +302,10 @@ void HairVulkanRenderer::startNextFrame() {
     if (sim_ && !scene_->hair.empty() && (st->wind || st->dragHair)) {
         SimParams params;
         params.windStrength = st->wind ? st->windStrength : 0.0f;
-        if (st->dragHair) params.dragTarget = st->dragPoint;
+        if (st->dragHair) {
+            params.dragging = true;
+            params.dragPoint = st->dragPoint;
+        }
         sim_->step(&scene_->hair.front()->mesh, 1.0f / 60.0f, params);
         scene_->hair.front()->textures.updateDynamic(scene_->hair.front()->mesh,
                                                      computeStylingFrames(scene_->hair.front()->mesh));
@@ -311,7 +324,8 @@ void HairVulkanRenderer::startNextFrame() {
     options.exposure = st->exposure;
     renderer_->applyHardwarePolicy(context_.info(), &options);
 
-    const VkImage swapchainImage = window_->currentSwapChainImage();
+    // currentSwapChainImageIndex() is the *index*; the image itself comes from swapChainImage().
+    const VkImage swapchainImage = window_->swapChainImage(window_->currentSwapChainImageIndex());
     renderer_->setCompositeTarget(swapchainView(swapchainImage), window_->colorFormat());
     renderer_->renderToSwapchainImage(swapchainImage, window_->width(), window_->height(),
                                       camera, options);
@@ -339,11 +353,12 @@ void HairVulkanRenderer::startNextFrame() {
 }
 
 QVulkanWindowRenderer* HairVulkanWindow::createRenderer() {
-    return new HairVulkanRenderer(this);
+    renderer_ = new HairVulkanRenderer(this);
+    return renderer_;
 }
 
 void HairVulkanWindow::reloadScene(int sceneIndex) {
-    if (auto* r = static_cast<HairVulkanRenderer*>(renderer())) r->rebuildScene(sceneIndex);
+    if (renderer_) renderer_->rebuildScene(sceneIndex);
 }
 
 void HairVulkanWindow::mousePressEvent(QMouseEvent* e) {
@@ -514,7 +529,11 @@ public:
         view_->setVulkanInstance(instance);
 
         overlay_ = new StatsOverlay(this);
-        setCentralWidget(view_);
+        // HairVulkanWindow derives from QVulkanWindow (a QWindow), so it has to be wrapped in
+        // a container before QMainWindow::setCentralWidget will take it.
+        QWidget* viewContainer = QWidget::createWindowContainer(view_, this);
+        viewContainer->setFocusPolicy(Qt::StrongFocus);
+        setCentralWidget(viewContainer);
         setWindowTitle("SilkCrowd - real-time hair rendering with hair meshes");
 
         auto* inspectorDock = new QDockWidget("Inspector", this);
