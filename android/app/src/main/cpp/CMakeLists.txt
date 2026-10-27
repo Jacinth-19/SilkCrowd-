@@ -8,7 +8,10 @@
 #  Section 3.2 (Option A), which is the Adreno path the paper targets.
 # -----------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.22)
-project(silkcrowd_android LANGUAGES CXX)
+# C as well as CXX: native_app_glue is a .c file, and CMake refuses to configure a target
+# whose sources are in a language the project has not enabled
+# ("Cannot determine link language for target glue") - that killed the first APK build.
+project(silkcrowd_android LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
