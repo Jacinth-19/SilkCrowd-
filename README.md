@@ -174,6 +174,48 @@ crowd storage (paper)      |###                                          | 1.7 M
 crowd storage (here)       |###                                          | 1.61 MB
 ```
 
+### The 2 ms question: measured on a CPU
+
+The paper's 2 ms is an RTX 4090 number. This checkout answers the obvious follow-up with
+measurements instead of a shrug - `--cpu-budget` times every phase of the paper's per-frame
+work on the machine it runs on, and `docs/CPU_2MS.md` has the full analysis:
+
+```bash
+./build/SilkCrowd --cpu-budget --scene crowd --crowd 100 --front-end-only --repeat 3
+./build/SilkCrowd --cpu-budget --scene head --width 1280 --height 720 --repeat 3
+```
+
+On a 2-core Xeon at 2.6 GHz, for the 100-character Figure 1 scene:
+
+| phase | ms | what it is |
+| --- | --- | --- |
+| front end (Eq. 7-12, Eq. 8 counts, culling, sort) | **1.17** | the only per-frame work a CPU owns in a real implementation - **fits in 2 ms with 1.7x to spare** |
+| generation (Figure 3e, 66.2 M vertices) | 10,975 | 162 ns per generated vertex |
+| raster (ribbons, 1 sample/pixel) | 14,491 | 64.2 M segments, 497 M shaded fragments |
+| **whole frame** | **25,472** | 12,700x the paper's 2 ms |
+
+Per parallel lane the CPU is within **8x** of the paper's GPU (39.4k vs 305k strands/s per
+lane); 16,384 / 2 = 8,192 is the lane-count ratio and essentially the whole wall-clock gap. So
+the deficit is cores, not algorithm - and the part of the frame that is genuinely CPU work fits
+inside the paper's budget. `docs/CPU_2MS.md` §7 has the arithmetic and §10 lists exactly which
+shortcuts the fast path takes so that nobody reads its 665 ms hero frame as the reference
+renderer getting faster (it is unchanged).
+
+![The fast CPU path](docs/images/cpu_fast_head.png)
+*The fast timing path's own frame (640x360): identical geometry, deliberately cheap shading, no
+head or shadow buffer - it exists to be timed, not to be looked at. Every image above is still
+produced by the reference renderer.*
+
+## What is not implemented
+
+`docs/NOT_IMPLEMENTED.md` is the complete, itemised list: what the paper has that this
+repository does not, what is blocked by the hardware in this environment (GPU timings, 8x MSAA
+verification, an on-device Android frame, the Qt6 editor never having been built here), and
+what is implemented differently on purpose (envelope shadowing instead of per-strand shadow
+rays, fixed-size texture blocks instead of the paper's tighter packing, a barycentric triangle
+mapping instead of the printed expression). Nothing in it is a surprise discovered by reading
+the code - each deviation is a named parameter, a printed warning or a flag.
+
 ### The workloads, rendered
 
 ![Crowd of 100 heads](docs/images/crowd_100_linux.png)
@@ -493,11 +535,13 @@ Android APK gate.
 | GNU Make, Release (`-O2 -g -Wall -Wextra`) | `make -j2` | 0 warnings, binary + tests |
 | CMake + Ninja, Release, `SILKCROWD_STRICT=ON` (`-Werror`) | `cmake -B build -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON && cmake --build build` | 0 warnings, 0 errors |
 | CTest | `ctest` in the build tree | **2/2** (`unit_tests`, `validation`) |
-| Unit tests | `./build/silkcrowd_tests` | **3234 checks, 0 failures** |
+| Unit tests | `./build/silkcrowd_tests` | **3317 checks, 0 failures** |
 | Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
 | Shaders | `glslang` 16 (SPIR-V) | **12/12** compile; every `.spv` starts with the SPIR-V magic. The previous "10 of 12" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
 | Android APK | `./gradlew assembleDebug` (NDK 26.1, CMake 3.22, AGP 8.5.2) in CI | **builds**: `libsilkcrowd.so` for `arm64-v8a` + `x86_64`, 12 SPIR-V modules in `assets/shaders`, per-ABI link clean |
+| Fast CPU path | `--cpu-budget --scene crowd --crowd 100 --front-end-only` | **1.17 ms** for 4,130 bundles; whole frame 25,472 ms (`docs/CPU_2MS.md`) |
+| Fast path = reference geometry | `./build/silkcrowd_tests` (`testCpuFastPath`) | max deviation **0.0 m** against `StrandGenerator`, 83 new checks |
 | Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 
 ## Repository layout
@@ -512,7 +556,7 @@ shaders/               GLSL: hair_common.glsl, hair.task, hair.mesh, hair.frag,
                        hair_compute.comp, hair_draw.vert, head.*, composite, bloom, shadow
 src/app/               CLI, scenes, asset export, Vulkan screenshot entry, Qt6 editor,
                        Vulkan diagnostics (gpu_probe.cpp, --gpu-info)
-tests/                 unit tests (3234 checks)
+tests/                 unit tests (3317 checks)
 tools/                 README compositor, asset helpers, GPU diagnostic self-test
 docs/GPU.md            Vulkan: the four things that can be missing, and how to install each
 android/               NDK + Gradle project (NativeActivity, Vulkan surface + swapchain)

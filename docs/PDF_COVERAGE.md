@@ -52,7 +52,7 @@ are blocked by the sandbox rather than by the code (no Vulkan driver, no GPU).
 | 3.1 | **Table 1**: hair-mesh texture (3D, 4 components) | DONE | `HairMeshTextureSet::buildHairMeshTexture()`; `--validate` checks the layout |
 | 3.2 | **Table 1**: uv-texture (2D) | DONE | `buildUvTexture()` |
 | 3.3 | **Table 1**: u-, v-, w-textures (3D) | DONE | `buildUVWTextures()`; w-texture is static |
-| 3.4 | `hair_mesh_texture.h` is the *only* texture/storage type | DONE | nothing else in `include/` stores per-strand data; 3234 test checks assert the layout invariants |
+| 3.4 | `hair_mesh_texture.h` is the *only* texture/storage type | DONE | nothing else in `include/` stores per-strand data; 3317 test checks in total, including the layout invariants |
 | 3.5 | **Figure 3e**: three intermediate slices between consecutive layers | DONE | `sliceForLayer()` / `blockToSlice()`; depth `1 + (L-1)*4`; validated numerically |
 | 3.6 | Two trilinear fetches + one linear fetch per strand segment | DONE | `shaders/hair_common.glsl`; `--validate` reproduces a piecewise-cubic curve from the fetches |
 | 3.7 | 2×2 block packing of bundles, 4×4 texels per bundle per slice | DONE | `blocksX * 2 * 4` texture width; validated |
@@ -167,13 +167,16 @@ are blocked by the sandbox rather than by the code (no Vulkan driver, no GPU).
 
 ## 13. Not done, and why (the OPEN list)
 
-These are the only items the PDF asks for that this repository does **not** deliver.
+These are the only items the PDF asks for that this repository does **not** deliver. A longer
+list - including the items that are blocked by this environment's hardware, the quality gaps
+accepted by decision, and the deviations that are parameters rather than omissions - is
+`docs/NOT_IMPLEMENTED.md`; the CPU-vs-2ms analysis is `docs/CPU_2MS.md`.
 
 | # | Item | Why | Next step |
 | --- | --- | --- | --- |
 | 13.1 | Running the Vulkan path **on this machine** | There is still no Vulkan loader, no ICD, no headers and no GPU here, so the binary in this checkout has no GPU renderer. It is no longer unexecuted code, though: the CI `linux` job renders headless on Mesa lavapipe with `VK_LAYER_KHRONOS_validation` enabled, and that run found and fixed seven real Vulkan bugs (`docs/GPU.md` §"What the first real run found") | run `SilkCrowd --gpu-info` then `SilkCrowd --gpu` on any machine with a Vulkan 1.3 driver |
 | 13.2 | Validating the GLSL | no `glslangValidator`/`glslc` in the image, so a compiler had to be built from source; with glslang 16 all 12 shaders compile and produce SPIR-V (that run found two real bugs, now fixed, and a `--vn` flag that wrote C headers into `.spv`). CI compiles them for real on Linux/Windows/macOS/Android | nothing left; keep CI as the gate |
-| 13.3 | Absolute GPU timings (2 ms, 1.8 ms for teapots, 47 ms no-LOD) | no GPU | re-measure with `--bench` on the reference hardware |
+| 13.3 | Absolute GPU timings (2 ms, 1.8 ms for teapots, 47 ms no-LOD) | no GPU | re-measure with `--bench` on the reference hardware. The CPU side is now measured rather than guessed: `--cpu-budget` gives every phase, and `docs/CPU_2MS.md` shows the 100-character front end at **1.17 ms** (inside the 2 ms budget) and the whole frame at 25.5 s (12,700x) |
 | 13.4 | 3.2 MB of texture storage for 200 teapots | our per-bundle block allocation is fixed-size; packing more bundles per block needs a variable-size block layout | extend `HairMeshTextureSet` with a size class per bundle |
 | 13.5 | Authoring UI for hair-mesh editing (Figure 5's workflow) | out of scope: this is a renderer, not an editor | a layer-handle editor in the Qt app |
 | 13.6 | Hand-authored Figure 10 silhouettes | the presets are procedural; ponytail and pixie need a gathered mass / shorter hairline, which is a mesh change, not a styling parameter | author two more mesh templates |
@@ -184,7 +187,7 @@ These are the only items the PDF asks for that this repository does **not** deli
 
 | Evidence | Command |
 | --- | --- |
-| 3234 unit/integration checks | `./build/silkcrowd_tests` |
+| 3317 unit/integration checks | `./build/silkcrowd_tests` |
 | 40 paper-critical invariants (slices, frames, Eq. 7–12, blue noise, texture layout) | `./build/SilkCrowd --validate` |
 | Storage per model, 100-model total | `./build/SilkCrowd --assets --scene crowd --crowd 100` |
 | LOD vs no LOD | `./build/SilkCrowd --bench --scene crowd --crowd 100 [--no-lod]` |

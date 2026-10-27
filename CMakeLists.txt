@@ -60,6 +60,7 @@ add_library(silkcrowd_core STATIC
   src/core/strand_generator.cpp
   src/core/styling.cpp
   src/render/software_renderer.cpp
+  src/render/cpu_fast.cpp
 )
 target_include_directories(silkcrowd_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # stb_image (public domain) is vendored for the scanned head's texture.

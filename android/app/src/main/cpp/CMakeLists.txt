@@ -39,6 +39,7 @@ add_library(silkcrowd SHARED
   ${SILKCROWD_ROOT}/src/core/strand_generator.cpp
   ${SILKCROWD_ROOT}/src/core/styling.cpp
   ${SILKCROWD_ROOT}/src/render/software_renderer.cpp
+  ${SILKCROWD_ROOT}/src/render/cpu_fast.cpp
   ${SILKCROWD_ROOT}/src/app/scenes.cpp
   ${SILKCROWD_ROOT}/src/gpu/vulkan_context.cpp
   ${SILKCROWD_ROOT}/src/gpu/hair_gpu_renderer.cpp)

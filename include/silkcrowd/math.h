@@ -209,19 +209,25 @@ inline uint32_t pcgHash(uint32_t v) {
 inline float hashToFloat(uint32_t h) {
     return (h >> 8) * (1.0f / 16777216.0f);  // [0,1)
 }
+// fmod(x, 1) computed as x - trunc(x): the remainder of a division by one *is* the
+// truncated fractional part, so this is exact and bit-identical to std::fmod for every
+// |x| < 2^23 (all inputs here), while avoiding the library call - which was the single most
+// expensive instruction in the styling path (6 calls per strand vertex, ~40 cycles each).
+inline float fmodOne(float v) { return v - std::trunc(v); }
+
 // Same construction as the GLSL `hash11`, so CPU validation matches the shader bit-for-bit
 // for the styling random offsets.
 inline float hash11(float p) {
-    p = std::fmod(p * 0.1031f, 1.0f);
+    p = fmodOne(p * 0.1031f);
     p *= p + 33.33f;
     p *= p + p;
-    return std::fmod(p, 1.0f);
+    return fmodOne(p);
 }
 inline float hash12(float x, float y) {
-    float p = std::fmod(x * 0.1031f + y * 0.3323f, 1.0f);
+    float p = fmodOne(x * 0.1031f + y * 0.3323f);
     p *= p + 33.33f;
     p *= p + p;
-    return std::fmod(p + std::fmod(x + y, 1.0f), 1.0f);
+    return fmodOne(p + fmodOne(x + y));
 }
 inline Vec3 hash31(float x, float y, float z) {
     const float a = hash12(x, y + z * 17.13f);

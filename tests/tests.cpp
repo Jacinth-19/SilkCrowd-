@@ -7,6 +7,7 @@
 
 #include "silkcrowd/assets.h"
 #include "silkcrowd/catmull_rom.h"
+#include "silkcrowd/cpu_fast.h"
 #include "silkcrowd/gpu_diag.h"
 #include "silkcrowd/hair_mesh_texture.h"
 #include "silkcrowd/lod.h"
@@ -333,6 +334,106 @@ void testTriangleBundle() {
     CHECK(tex.validate(mesh, TexelFormat::Float32).rootSliceMatchesMesh);
 }
 
+
+// The fast CPU path must not be fast because it is doing something else: its generator is
+// asserted vertex-for-vertex against the reference StrandGenerator, and the renderer is
+// asserted to actually produce hair.
+void testCpuFastPath() {
+    std::printf("fast CPU path\n");
+    const HairMesh mesh = testMesh(4, 3, 3);
+    auto inst = makeHairInstance(mesh, StylingParams::fromPreset(2, 7u), 7u, TexelFormat::Float32);
+    StrandGenerator gen(inst->textures, inst->styling, 0.0005f);
+    StrandGeometry g;
+    std::vector<Vec3> fast;
+
+    // Same request, same vertex LOD, three strands and both endpoints of the LOD range.
+    bool used = false;
+    for (uint32_t face = 0; face < mesh.numFaces() && face < 6; ++face) {
+        for (uint32_t s = 0; s < 3; ++s) {
+            for (int exponent : {2, 5}) {
+                VertexLodResult lod;
+                lod.exponentE = exponent;
+                lod.exponentPrev = exponent;
+                lod.gamma = 0.0f;
+                StrandRequest req;
+                req.face = face;
+                req.strandIndex = s;
+                req.bundleIndex = face;
+                // The fast path takes its block coordinate from the progressive blue-noise
+                // set (Section 3.3); hand the reference generator exactly the same root.
+                req.blockCoord = fastRootCoordinate(mesh, face, s);
+                gen.generate(req, lod, &g);
+                generateStrandFast(*inst, face, s, (1 << exponent), 0.0f, &fast);
+                CHECK(fast.size() == g.vertices.size());
+                float maxDev = 0.0f;
+                for (size_t k = 0; k < fast.size() && k < g.vertices.size(); ++k)
+                    maxDev = std::max(maxDev, length(fast[k] - g.vertices[k].position));
+                CHECK_NEAR(maxDev, 0.0, 1e-6);
+                if (maxDev == 0.0f) used = true;
+            }
+        }
+    }
+    CHECK(used);
+
+    // Morphing (Eq. 12) must match too.
+    VertexLodResult morph;
+    morph.exponentE = 5;
+    morph.exponentPrev = 4;
+    morph.gamma = 0.6f;
+    StrandRequest req;
+    req.face = 0;
+    req.strandIndex = 1;
+    req.bundleIndex = 0;
+    req.blockCoord = fastRootCoordinate(mesh, 0, 1);
+    gen.generate(req, morph, &g);
+    generateStrandFast(*inst, 0, 1, 32, 0.6f, &fast);
+    CHECK(fast.size() == g.vertices.size());
+    float morphDev = 0.0f;
+    for (size_t k = 0; k < fast.size() && k < g.vertices.size(); ++k)
+        morphDev = std::max(morphDev, length(fast[k] - g.vertices[k].position));
+    CHECK_NEAR(morphDev, 0.0, 1e-6);
+
+    // The renderer itself: a small scene, and the frame must contain lit hair. Built
+    // directly from the asset API so the test target does not depend on src/app.
+    HeadModel head;
+    HairStyleSpec spec = HairStyleSpec::fromFigure10(2, 1u);
+    spec.totalStrands = 1500;
+    HairMesh sceneMesh = buildHairMesh(head, spec);
+    Scene scene;
+    scene.hair.push_back(makeHairInstance(sceneMesh, spec.styling, 1u, TexelFormat::Float32));
+    Camera cam;
+    cam.position = Vec3(0.05f, 0.10f, 0.46f);
+    cam.target = Vec3(0.0f, 0.05f, 0.0f);
+    cam.fovY = 0.60f;
+    RenderOptions opt;
+    opt.width = 160;
+    opt.height = 90;
+    opt.ssaa = 1;
+    opt.enableLod = true;
+    CpuFastRenderer fast2;
+    fast2.setThreads(1);
+    Image img;
+    CpuFastStats st;
+    fast2.render(scene, cam, opt, &img, &st);
+    CHECK(st.bundles > 0);
+    CHECK(st.strands > 0);
+    CHECK(st.vertices > st.strands);           // (2^e + 1) vertices per strand
+    CHECK(st.vertices % st.strands == 0);
+    CHECK(st.frontEndMs >= 0.0 && st.rasterMs >= 0.0);
+    int lit = 0;
+    for (const Vec3& p : img.pixels)
+        if (p.x > 0.36f || p.y > 0.44f || p.z > 0.56f) ++lit;  // brighter than the backdrop
+    CHECK(lit > 40);
+
+    // LOD actually reduces the workload (Eq. 7-12); disabling it restores it.
+    CpuFastStats noLodStats;
+    RenderOptions noLod = opt;
+    noLod.enableLod = false;
+    fast2.render(scene, cam, noLod, &img, &noLodStats);
+    CHECK(noLodStats.strands >= st.strands);
+    CHECK(noLodStats.vertices > st.vertices);
+}
+
 void testGpuDiagnostics() {
     std::printf("gpu diagnostics\n");
     // ---- ICD manifest parsing ------------------------------------------------------------
@@ -458,6 +559,7 @@ int main() {
     testLod();
     testStrandGeneration();
     testTriangleBundle();
+    testCpuFastPath();
     testGpuDiagnostics();
     std::printf("====================\n%d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

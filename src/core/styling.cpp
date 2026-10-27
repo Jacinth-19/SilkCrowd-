@@ -399,11 +399,18 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
     const float ramp = smoothstepf(0.0f, std::max(p.rootFade, 1e-3f), w);
 
     // Curl: a helix around the base curve, expressed in the local styling plane.
+    // The ringlet helix below shares this phase, so cos/sin are evaluated once per vertex
+    // instead of twice: the two trig pairs are 40-50 cycles each and this function runs
+    // once per strand vertex (tens of millions of times in a crowd frame).
     Vec2 d = Vec2(0, 0);
-    if (p.curl != 0.0f) {
+    float cosPhase = 1.0f, sinPhase = 0.0f;
+    const bool curls = p.curl != 0.0f;
+    if (curls) {
         const float phase = 2.0f * kPi * p.curlFrequency * w + s.phase;
+        cosPhase = std::cos(phase);
+        sinPhase = std::sin(phase);
         const float amp = p.curl * ramp;
-        d += Vec2(std::cos(phase), std::sin(phase)) * amp;
+        d += Vec2(cosPhase, sinPhase) * amp;
         // A little bit of lengthwise motion keeps the curl from looking like a ribbon.
         d += s.randomDir * (amp * p.curlRadius * 0.25f);
     }
@@ -411,8 +418,12 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
     // Clumping: converge toward the shared clump center, strongest at the tip.
     if (p.clumping > 0.0f) {
         const Vec2 toCenter = s.clumpUV - s.uv;
-        const float weight = p.clumping * std::pow(ramp, 1.0f) *
-                             std::pow(w, p.clumpTipTightness) * 0.55f;
+        // pow() with an integral small exponent is the common case (1.0, 2.0) and is exactly
+        // what pow() returns for it, without the ~50-cycle library call.
+        const float tip = p.clumpTipTightness == 2.0f ? w * w
+                          : p.clumpTipTightness == 1.0f ? w
+                                                        : std::pow(w, p.clumpTipTightness);
+        const float weight = p.clumping * ramp * tip * 0.55f;
         d += toCenter * weight * 2.0f;
     }
     // The tube: every strand of a clump keeps its own place across the lock's cross-section
@@ -420,9 +431,8 @@ Vec3 styleStrandVertex(const StylingParams& p, const StrandStylingState& s, Vec3
     Vec3 tube = Mp * Vec3(s.clumpDisk.x, s.clumpDisk.y, 0.0f) * (p.clumpRadiusM * ramp);
     // Ringlet helix, in metres, around the (already clumped) centre line.
     Vec3 helix(0, 0, 0);
-    if (p.curlRadiusM > 0.0f && p.curl != 0.0f) {
-        const float phase = 2.0f * kPi * p.curlFrequency * w + s.phase;
-        helix = Mp * Vec3(std::cos(phase), std::sin(phase), 0.0f) *
+    if (p.curlRadiusM > 0.0f && curls) {
+        helix = Mp * Vec3(cosPhase, sinPhase, 0.0f) *
                 (p.curlRadiusM * clampf(p.curl, 0.0f, 1.2f) * ramp);
     }
 

@@ -89,6 +89,14 @@ jobs:
           fi
       - name: Unit tests
         run: ./build/silkcrowd_tests
+      - name: CPU budget (the paper's per-frame work, phase by phase)
+        # Records the numbers docs/CPU_2MS.md talks about on the runner that builds this
+        # commit, so a regression in the fast path shows up as a number, not as a hunch. The
+        # scene is deliberately small: this is a smoke test of the phases, not a benchmark
+        # record (the runner is shared and its timing is noisy).
+        run: |
+          ./build/SilkCrowd --cpu-budget --scene crowd --crowd 12 --width 480 --height 270             --repeat 1 --front-end-only | tee cpu_budget_frontend.txt
+          ./build/SilkCrowd --cpu-budget --scene head --width 480 --height 270 --repeat 1             | tee cpu_budget_head.txt
       - name: Vulkan diagnostics self-test
         # Proves the diagnostic itself tells four states apart (ready / no-device / no-driver
         # / unsupported-device) against a synthetic loader, so `--gpu-info` cannot be the

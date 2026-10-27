@@ -78,44 +78,83 @@ inline void bilinearWeights(float coord, uint32_t dim, uint32_t* i0, uint32_t* i
 // =============================================================================
 //  Texture sampling - mirrors VK_FILTER_LINEAR + VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
 // =============================================================================
+namespace {
+
+// One bilinear tap: the two texel indices on an axis and the fraction between them.
+// Same arithmetic as bilinearWeights() above (clamp to the texel-centre range), written
+// with 32-bit ints and one float->int conversion so that the compiler emits a handful of
+// instructions instead of the two dozen the generic version expanded to. `c` is clamped to
+// [0, dim-1] first, so truncation and floor agree and no libm call is involved.
+struct AxisTap {
+    uint32_t i0 = 0, i1 = 0;
+    float a = 0.0f;
+};
+
+inline AxisTap axisTap(float coord, uint32_t dim) {
+    const float hi = static_cast<float>(dim - 1);
+    float c = coord * static_cast<float>(dim) - 0.5f;
+    c = c < 0.0f ? 0.0f : (c > hi ? hi : c);
+    const uint32_t i0 = static_cast<uint32_t>(c);
+    AxisTap t;
+    t.i0 = i0;
+    t.i1 = (i0 + 1u < dim) ? i0 + 1u : dim - 1u;
+    t.a = c - static_cast<float>(i0);
+    return t;
+}
+
+}  // namespace
+
 void Texture2D::sample(float s, float t, float* out) const {
-    uint32_t x0, x1, y0, y1;
-    float ax, ay;
-    bilinearWeights(s, width, &x0, &x1, &ax);
-    bilinearWeights(t, height, &y0, &y1, &ay);
-    const float* t00 = texel(x0, y0);
-    const float* t10 = texel(x1, y0);
-    const float* t01 = texel(x0, y1);
-    const float* t11 = texel(x1, y1);
+    const AxisTap sx = axisTap(s, width);
+    const AxisTap sy = axisTap(t, height);
+    const size_t rowStride = width * components;
+    const float* r0 = data.data() + sy.i0 * rowStride;
+    const float* r1 = data.data() + sy.i1 * rowStride;
+    const float* t00 = r0 + sx.i0 * components;
+    const float* t10 = r0 + sx.i1 * components;
+    const float* t01 = r1 + sx.i0 * components;
+    const float* t11 = r1 + sx.i1 * components;
+    if (components == 3) {  // the uv-texture: straight-line, the common case
+        for (int c = 0; c < 3; ++c) {
+            const float bottom = t00[c] + (t10[c] - t00[c]) * sx.a;
+            const float top = t01[c] + (t11[c] - t01[c]) * sx.a;
+            out[c] = bottom + (top - bottom) * sy.a;
+        }
+        return;
+    }
     for (uint32_t c = 0; c < components; ++c) {
-        const float bottom = t00[c] + (t10[c] - t00[c]) * ax;
-        const float top = t01[c] + (t11[c] - t01[c]) * ax;
-        out[c] = bottom + (top - bottom) * ay;
+        const float bottom = t00[c] + (t10[c] - t00[c]) * sx.a;
+        const float top = t01[c] + (t11[c] - t01[c]) * sx.a;
+        out[c] = bottom + (top - bottom) * sy.a;
     }
 }
 
 void Texture3D::sample(float s, float t, float r, float* out) const {
-    uint32_t x0, x1, y0, y1, z0, z1;
-    float ax, ay, az;
-    bilinearWeights(s, width, &x0, &x1, &ax);
-    bilinearWeights(t, height, &y0, &y1, &ay);
-    bilinearWeights(r, depth, &z0, &z1, &az);
-    for (uint32_t c = 0; c < components; ++c) {
-        const float* b00 = texel(x0, y0, z0);
-        const float* b10 = texel(x1, y0, z0);
-        const float* b01 = texel(x0, y1, z0);
-        const float* b11 = texel(x1, y1, z0);
-        const float* c00 = texel(x0, y0, z1);
-        const float* c10 = texel(x1, y0, z1);
-        const float* c01 = texel(x0, y1, z1);
-        const float* c11 = texel(x1, y1, z1);
-        const float lo0 = b00[c] + (b10[c] - b00[c]) * ax;
-        const float lo1 = b01[c] + (b11[c] - b01[c]) * ax;
-        const float lo = lo0 + (lo1 - lo0) * ay;
-        const float hi0 = c00[c] + (c10[c] - c00[c]) * ax;
-        const float hi1 = c01[c] + (c11[c] - c01[c]) * ax;
-        const float hi = hi0 + (hi1 - hi0) * ay;
-        out[c] = lo + (hi - lo) * az;
+    const AxisTap sx = axisTap(s, width);
+    const AxisTap sy = axisTap(t, height);
+    const AxisTap sz = axisTap(r, depth);
+    // The eight texel addresses are computed once, from integer strides, instead of once
+    // per component: this is the hottest function in the renderer (2-3 calls per strand
+    // vertex) and the generic version spent most of its time on address arithmetic.
+    const size_t rowStride = size_t(width) * components;
+    const size_t sliceStride = size_t(height) * rowStride;
+    const float* planes[2] = {data.data() + sz.i0 * sliceStride, data.data() + sz.i1 * sliceStride};
+    const float* p00[2], *p10[2], *p01[2], *p11[2];
+    for (int p = 0; p < 2; ++p) {
+        p00[p] = planes[p] + sy.i0 * rowStride + sx.i0 * components;
+        p10[p] = planes[p] + sy.i0 * rowStride + sx.i1 * components;
+        p01[p] = planes[p] + sy.i1 * rowStride + sx.i0 * components;
+        p11[p] = planes[p] + sy.i1 * rowStride + sx.i1 * components;
+    }
+    const uint32_t n = components;
+    for (uint32_t c = 0; c < n; ++c) {
+        const float lo0 = p00[0][c] + (p10[0][c] - p00[0][c]) * sx.a;
+        const float lo1 = p01[0][c] + (p11[0][c] - p01[0][c]) * sx.a;
+        const float lo = lo0 + (lo1 - lo0) * sy.a;
+        const float hi0 = p00[1][c] + (p10[1][c] - p00[1][c]) * sx.a;
+        const float hi1 = p01[1][c] + (p11[1][c] - p01[1][c]) * sx.a;
+        const float hi = hi0 + (hi1 - hi0) * sy.a;
+        out[c] = lo + (hi - lo) * sz.a;
     }
 }
 
@@ -326,10 +365,33 @@ float HairMeshTextureSet::sampleW(Vec2 st, float layerCoord) const {
 }
 
 void HairMeshTextureSet::sampleFrame(Vec2 st, float layerCoord, Vec3* uOut, Vec3* vOut) const {
+    // u- and v-textures have identical dimensions, so the eight texel taps are at the same
+    // addresses in both: compute the bilinear weights once and fetch both frames with them.
     const float r = (layerCoord + 0.5f) / static_cast<float>(u.depth);
+    const AxisTap sx = axisTap(st.x, u.width);
+    const AxisTap sy = axisTap(st.y, u.height);
+    const AxisTap sz = axisTap(r, u.depth);
+    const size_t rowStride = size_t(u.width) * 3u;
+    const size_t sliceStride = size_t(u.height) * rowStride;
     float uo[3] = {0, 0, 0}, vo[3] = {0, 0, 0};
-    u.sample(st.x, st.y, r, uo);
-    v.sample(st.x, st.y, r, vo);
+    for (int p = 0; p < 2; ++p) {
+        const uint32_t z = p == 0 ? sz.i0 : sz.i1;
+        const float wz = p == 0 ? 1.0f - sz.a : sz.a;
+        for (int q = 0; q < 2; ++q) {
+            const uint32_t y = q == 0 ? sy.i0 : sy.i1;
+            const float wy = q == 0 ? 1.0f - sy.a : sy.a;
+            for (int c = 0; c < 2; ++c) {
+                const uint32_t x = c == 0 ? sx.i0 : sx.i1;
+                const float wx = c == 0 ? 1.0f - sx.a : sx.a;
+                const size_t idx = z * sliceStride + y * rowStride + x * 3u;
+                const float weight = wx * wy * wz;
+                for (int k = 0; k < 3; ++k) {
+                    uo[k] += u.data[idx + k] * weight;
+                    vo[k] += v.data[idx + k] * weight;
+                }
+            }
+        }
+    }
     if (uOut) *uOut = Vec3(uo[0], uo[1], uo[2]);
     if (vOut) *vOut = Vec3(vo[0], vo[1], vo[2]);
 }

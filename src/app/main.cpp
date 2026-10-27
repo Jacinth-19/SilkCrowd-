@@ -18,6 +18,7 @@
 
 #include "silkcrowd/assets.h"
 #include "silkcrowd/catmull_rom.h"
+#include "silkcrowd/cpu_fast.h"
 #include "silkcrowd/hair_mesh_texture.h"
 #include "silkcrowd/image.h"
 #include "silkcrowd/lod.h"
@@ -67,6 +68,9 @@ struct Args {
     std::string headScan;    // "" = default asset, "none" = procedural
     float yaw = 0.0f;        // camera azimuth around the scene target, degrees
     bool studio = false;     // dark studio backdrop instead of sky + ground grid
+    int threads = 0;         // 0 = every hardware thread (--cpu-budget)
+    int repeat = 3;          // best-of-N for --cpu-budget
+    bool frontEndOnly = false;  // --cpu-budget: stop after the front end (Eq. 7-12 + cull)
 };
 
 void printHelp() {
@@ -77,6 +81,9 @@ void printHelp() {
         "Modes:\n"
         "  --validate            run the paper validation suite (Figure 3e, Eq. 1-12)\n"
         "  --bench               benchmark generation + rasterisation, report workloads\n"
+        "  --cpu-budget          time the paper's per-frame work phase by phase on the CPU,\n"
+        "                        and report what a 2 ms budget buys (docs/CPU_2MS.md)\n"
+        "  --fast-screenshot <f> render with the fast CPU path instead of the reference one\n"
         "  --screenshot <file>   render one frame to a PNG\n"
         "  --assets              write assets/heads/*.gltf and assets/hairmeshes/*.skhm\n"
         "  --interactive         launch the Qt6 editor (requires a build with Qt6)\n"
@@ -113,7 +120,10 @@ void printHelp() {
         "  --validation                enable the Vulkan validation layer (needs vulkan-validationlayers)\n"
         "  --msaa N                    1, 2, 4 or 8 (Vulkan path)\n"
         "  --no-taa                    disable temporal anti-aliasing (Vulkan path)\n"
-        "  --wind F                    wind speed in m/s (simulation)\n");
+        "  --wind F                    wind speed in m/s (simulation)\n"
+        "  --threads N                 worker threads for --cpu-budget / --fast-screenshot\n"
+        "  --repeat N                  best-of-N timing for --cpu-budget (default 3)\n"
+        "  --front-end-only            --cpu-budget: measure Eq. 7-12 + culling only\n");
 }
 
 Args parseArgs(int argc, char** argv) {
@@ -130,6 +140,11 @@ Args parseArgs(int argc, char** argv) {
         if (s == "--validate") a.mode = "validate";
         else if (s == "--gpu-info" || s == "--vulkan-info") a.mode = "gpu";
         else if (s == "--bench") a.mode = "bench";
+        else if (s == "--cpu-budget") a.mode = "cpu-budget";
+        else if (s == "--fast-screenshot") { a.mode = "fast-shot"; a.out = next("--fast-screenshot"); }
+        else if (s == "--threads") a.threads = std::stoi(next("--threads"));
+        else if (s == "--repeat") a.repeat = std::max(1, std::stoi(next("--repeat")));
+        else if (s == "--front-end-only") a.frontEndOnly = true;
         else if (s == "--screenshot") { a.mode = "screenshot"; a.out = next("--screenshot"); }
         else if (s == "--assets") a.mode = "assets";
         else if (s == "--interactive") a.mode = "interactive";
@@ -716,6 +731,144 @@ void runBench(const Args& a) {
                 static_cast<int>(std::thread::hardware_concurrency()));
 }
 
+
+// ---------------------------------------------------------------------------
+//  --cpu-budget: the paper's 2 ms, measured against a CPU
+// ---------------------------------------------------------------------------
+// The paper reports ~2 ms for 100 characters on an RTX 4090. This mode runs the same
+// workload through the fast CPU path phase by phase, reports how much of a 2 ms budget each
+// phase needs, and states plainly whether the frame fits. Everything printed here is
+// measured on the machine that runs it; docs/CPU_2MS.md explains the method and lists the
+// deviations of the fast path from the reference one.
+void runCpuBudget(const Args& a) {
+    const auto tBuild0 = std::chrono::high_resolution_clock::now();
+    Scene scene = (a.scene == "crowd") ? buildCrowdScene(a.crowd)
+                 : (a.scene == "teapot") ? buildTeapotScene(a.crowd)
+                                         : buildHeadScene(a.style, static_cast<uint32_t>(a.strandCount));
+    const auto tBuild1 = std::chrono::high_resolution_clock::now();
+    double textureKB = 0.0;
+    uint64_t strandsTotal = 0;
+    for (const auto& inst : scene.hair) {
+        textureKB += static_cast<double>(inst->textureBytes) / 1024.0;
+        for (uint32_t f = 0; f < inst->mesh.numFaces(); ++f)
+            strandsTotal += inst->mesh.bundleStrandCounts()[f];
+    }
+
+    Camera cam = (a.scene == "crowd") ? crowdCamera(a.width, a.height)
+                 : (a.scene == "teapot") ? teapotCamera(a.width, a.height)
+                                         : headCamera(a.width, a.height);
+    RenderOptions opt;
+    opt.width = a.width;
+    opt.height = a.height;
+    opt.ssaa = 1;
+    opt.enableLod = a.lod;
+
+    CpuFastRenderer fast;
+    fast.setThreads(a.threads);
+    const int threads = fast.threads();
+    const int hw = static_cast<int>(std::thread::hardware_concurrency());
+
+    CpuFastStats best;
+    CpuFastStats bestGen;
+    double bestTotal = 1e30, bestGenTotal = 1e30;
+    Image img;
+    {   // warm-up (allocates the arenas, builds the blue-noise sets) - not measured
+        CpuFastStats warm;
+        fast.render(scene, cam, opt, &img, &warm);
+    }
+    if (a.frontEndOnly) {
+        // Only the per-frame CPU work a GPU implementation would still have to do: LOD
+        // selection (Eq. 7-12) for every bundle, Eq. 8 strand counts, culling, and the
+        // sorting that decides the draw order.
+        for (int r = 0; r < a.repeat; ++r) {
+            CpuFastStats gs;
+            fast.generateOnly(scene, cam, opt, &gs);
+            if (gs.frontEndMs < bestGenTotal) { bestGenTotal = gs.frontEndMs; bestGen = gs; }
+        }
+        best = bestGen;
+        best.totalMs = best.frontEndMs;
+        best.generateMs = 0.0;
+        best.rasterMs = 0.0;
+        best.resolveMs = 0.0;
+    } else {
+        for (int r = 0; r < a.repeat; ++r) {
+            CpuFastStats st;
+            fast.render(scene, cam, opt, &img, &st);
+            if (st.totalMs < bestTotal) { bestTotal = st.totalMs; best = st; }
+            CpuFastStats gs;
+            fast.generateOnly(scene, cam, opt, &gs);
+            if (gs.totalMs < bestGenTotal) { bestGenTotal = gs.totalMs; bestGen = gs; }
+        }
+    }
+
+    auto pct = [](double part, double whole) {
+        return whole > 1e-9 ? 100.0 * part / whole : 0.0;
+    };
+    auto perStrand = [](double ms, uint64_t n) {
+        return n ? ms * 1e6 / static_cast<double>(n) : 0.0;
+    };
+    std::printf("SilkCrowd CPU budget - the paper's per-frame work, on a CPU\n");
+    std::printf("---------------------------------------------------------\n");
+    std::printf("scene          %s: %zu hair models, %llu strands, %.2f MB of HairMeshTextures\n",
+                a.scene.c_str(), scene.hair.size(),
+                static_cast<unsigned long long>(strandsTotal), textureKB / 1024.0);
+    std::printf("resolution     %dx%d, %.1f MB of framebuffer (one sample per pixel)\n",
+                a.width, a.height,
+                static_cast<double>(a.width) * a.height * 4.0 * 4.0 / (1024.0 * 1024.0));
+    std::printf("threads        %d (machine reports %d)\n", threads, hw);
+    std::printf("scene build    %.1f ms (hair meshes + the five textures, once)\n",
+                std::chrono::duration<double, std::milli>(tBuild1 - tBuild0).count());
+    std::printf("LOD            %s\n\n", a.lod ? "on (Eq. 7-12)" : "off (Figure 8 comparison)");
+    std::printf("phase                        %10s %8s %12s %12s\n", "ms", "share", "ns/strand",
+                "ns/vertex");
+    std::printf("  front end (Eq. 7-12, cull) %10.2f %7.1f%% %12.1f %12s\n", best.frontEndMs,
+                pct(best.frontEndMs, best.totalMs), perStrand(best.frontEndMs, best.strands), "-");
+    std::printf("  generation (Figure 3e)     %10.2f %7.1f%% %12.1f %12.1f\n", best.generateMs,
+                pct(best.generateMs, best.totalMs), perStrand(best.generateMs, best.strands),
+                perStrand(best.generateMs, best.vertices));
+    std::printf("  raster (ribbon capsules)   %10.2f %7.1f%% %12.1f %12s\n", best.rasterMs,
+                pct(best.rasterMs, best.totalMs), perStrand(best.rasterMs, best.strands), "-");
+    std::printf("  resolve (composite+tonemap)%10.2f %7.1f%% %12s %12s\n", best.resolveMs,
+                pct(best.resolveMs, best.totalMs), "-", "-");
+    std::printf("  total                      %10.2f %7.1f%% %12.1f %12.1f\n", best.totalMs, 100.0,
+                perStrand(best.totalMs, best.strands), perStrand(best.totalMs, best.vertices));
+    std::printf("\nworkload       %llu bundles rendered (%llu culled), %llu strands after Eq. 8, "
+                "%llu vertices after Eq. 9-12\n",
+                static_cast<unsigned long long>(best.bundles),
+                static_cast<unsigned long long>(best.bundlesCulled),
+                static_cast<unsigned long long>(best.strands),
+                static_cast<unsigned long long>(best.vertices));
+    std::printf("               %llu segments, %llu shaded fragments (%.1f per pixel)\n",
+                static_cast<unsigned long long>(best.segments),
+                static_cast<unsigned long long>(best.pixelsShaded),
+                static_cast<double>(best.pixelsShaded) /
+                    (static_cast<double>(a.width) * a.height));
+
+    // ---- the 2 ms line ----
+    const double budget = 2.0;
+    std::printf("\n2 ms budget (the paper's number for this scene on an RTX 4090)\n");
+    std::printf("  front end only                              %8.2f ms   %s\n", best.frontEndMs,
+                best.frontEndMs <= budget ? "FITS" : "over");
+    if (a.frontEndOnly) {
+        std::printf("  geometry (Figure 3e) and rasterisation      not measured (--front-end-only)\n");
+    } else {
+        std::printf("  front end + geometry (no raster)            %8.2f ms   %s\n", bestGen.totalMs,
+                    bestGen.totalMs <= budget ? "FITS" : "over");
+    }
+    std::printf("  full frame (geometry + raster + resolve)    %8.2f ms   %s\n", best.totalMs,
+                best.totalMs <= budget ? "FITS" : "over");
+    const double headsPerBudget = best.totalMs > 1e-9
+                                      ? budget / (best.totalMs / static_cast<double>(scene.hair.size()))
+                                      : 0.0;
+    std::printf("\n  scaled: 2 ms of this CPU renders %.2f hair models of this scene\n",
+                headsPerBudget);
+    if (!a.lod) {
+        std::printf("  (LOD is off: this is the Figure 8 comparison workload, not the paper's "
+                    "100-character frame)\n");
+    }
+    std::printf("%s\n", best.toString().c_str());
+}
+
 // Runs the hair mesh simulation for the given number of frames and reports stability.
 SimStats simulateScene(Scene* scene, int frames, float dt, const Args& a) {
     SimParams params;
@@ -845,6 +998,32 @@ int main(int argc, char** argv) {
         return report.find("FAILURES") != std::string::npos ? 1 : 0;
     }
     if (args.mode == "bench") { runBench(args); return 0; }
+    if (args.mode == "cpu-budget") { runCpuBudget(args); return 0; }
+    if (args.mode == "fast-shot") {
+        Scene scene = (args.scene == "crowd") ? buildCrowdScene(args.crowd)
+                     : (args.scene == "teapot") ? buildTeapotScene(args.crowd)
+                                                : buildHeadScene(args.style,
+                                                                 static_cast<uint32_t>(args.strandCount));
+        Camera cam = (args.scene == "crowd") ? crowdCamera(args.width, args.height)
+                     : (args.scene == "teapot") ? teapotCamera(args.width, args.height)
+                                                : headCamera(args.width, args.height);
+        RenderOptions opt;
+        opt.width = args.width;
+        opt.height = args.height;
+        opt.ssaa = 1;
+        opt.enableLod = args.lod;
+        opt.exposure = args.exposure;
+        CpuFastRenderer fast;
+        fast.setThreads(args.threads);
+        Image img;
+        CpuFastStats st;
+        fast.render(scene, cam, opt, &img, &st);
+        writePng(args.out, img, opt.exposure);
+        std::printf("%s\n", st.toString().c_str());
+        std::printf("wrote %s (fast CPU path: approximate shading, no shadow buffer)\n",
+                    args.out.c_str());
+        return 0;
+    }
     if (args.mode == "gpu") {
         const GpuFacts facts = probeGpu();
         printGpuReport(facts, stdout);
