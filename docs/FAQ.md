@@ -115,12 +115,17 @@ The frame is then rendered by `src/render/software_renderer.cpp`, a full CPU imp
 the same pipeline (same texture layout, same LOD, same shading model, same self-shadow
 buffer) — that is why every image in `docs/` is real and reproducible in this sandbox.
 
-**On hardware.** With a Vulkan 1.3 driver (Mesa lavapipe/RADV/ANV, NVIDIA, AMD, Intel) `--gpu`
-takes the mesh-shader path; devices without `VK_EXT_mesh_shader` take the compute fallback
-described in `docs/PAPER_MAPPING.md` §7. The CI `linux` job installs `mesa-vulkan-drivers`
-(lavapipe), runs `--gpu-info` and **fails** if the verdict is not `ready`, then renders the
-headless Vulkan screenshot — also unguarded now. Before this change that step ended in
-`|| true` with a hard-coded ICD filename, so a broken GPU build could hide behind a green run.
+**On hardware — and in CI.** With a Vulkan 1.3 driver (Mesa lavapipe/RADV/ANV, NVIDIA, AMD,
+Intel) `--gpu` takes the mesh-shader path; devices without `VK_EXT_mesh_shader` take the compute
+fallback described in `docs/PAPER_MAPPING.md` §7. The CI `linux` job installs
+`mesa-vulkan-drivers` (lavapipe), runs the diagnostic self-test, runs `--gpu-info` and **fails**
+if the verdict is not `ready`, then renders headless on lavapipe with the validation layer on.
+Before this change that step ended in `|| true` with a hard-coded ICD filename, so a broken GPU
+build hid behind a green run — and it was broken: the first honest run segfaulted, and the
+seven bugs behind it (null descriptor layouts, missing dynamic viewport state, mis-ordered
+texture bindings, an undeclared bundle-metadata binding, wrong push-constant stages, a
+mis-ordered uniform block, `VK_KHR_swapchain` without a surface) are listed in `docs/GPU.md`.
+The Vulkan path now draws.
 
 ---
 

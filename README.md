@@ -450,9 +450,13 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
   SPIR-V: all 12, including `hair.task`/`hair.mesh` (verified here with glslang 16 built from
   source, because no package manager is reachable; that run found and fixed two real shader
   bugs - see "Also fixed on the way" in the PR).
-  It has not been *executed* on this machine (no Vulkan driver), so its timings come from the CI
-  runs on real devices (lavapipe, MoltenVK, an Android emulator) and are copied into the table
-  above by the workflow - if a row says `n/a`, that platform has not reported yet.
+  It is **executed in CI**: the Linux job renders headless on Mesa's lavapipe with
+  `VK_LAYER_KHRONOS_validation` enabled, and that run is what turned the Vulkan path from
+  "compiles" into "draws". Getting it there found and fixed seven real bugs, all of them the kind
+  that only a driver or the validation layer can find - see `docs/GPU.md` §"What the first real
+  run found". It has not been executed *on this machine* (no Vulkan driver, so no timing can be
+  taken here): the numbers in the tables come from the software rasteriser, and GPU timings come
+  from CI runs on real devices - if a row says `n/a`, that platform has not reported yet.
 * The **Vulkan diagnostics** (`--gpu-info`) *are* executed here, against a synthetic
   `libvulkan.so.1`: `./tools/gpu_probe_selftest.sh` drives the real `src/app/gpu_probe.cpp` through
   `ready`, `no-device`, `no-driver`, `unsupported-device` and a mixed two-device list. The CI
@@ -466,8 +470,9 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
   README is rendered with it). The Vulkan path draws the same scan mesh and the same scalp
   parameterization, but its skin shader still evaluates the *analytic* face masks rather than
   sampling the scan's texture: binding the 1K diffuse to the head pipeline is the one piece of the
-  scan integration that exists only on the software path, because the Vulkan path cannot be run (or
-  its descriptor sets validated) on this machine.
+  scan integration that exists only on the software path (the Vulkan path is exercised in CI, but
+  the scan texture upload is not wired to its head pipeline yet, and the validation layer has not
+  been through that path on this machine).
 
 ### What was actually built and run
 

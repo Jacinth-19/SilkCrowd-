@@ -106,13 +106,44 @@ in `docs/` comes from the software rasteriser. What *is* verified here:
   verdicts — `ready`, `no-device`, `no-driver`, `unsupported-device`, and a two-device list
   where only one is usable. It needs Vulkan headers but no driver, and it is a CI step.
 * The Vulkan branch of `src/app/gpu_probe.cpp` is compiled under `-Wall -Wextra -Werror`
-  against the official Khronos headers before every push.
+  against the official Khronos headers before every push, and so are `src/gpu/*.cpp`.
+* All 12 GLSL shaders compile to real SPIR-V here (a glslang 16 built from source, since no
+  package mirror is reachable), checked with the exact command line CMake emits.
 
-What is still **not** verified here: the actual rendering of `src/gpu` on a device. That is what
-CI is for. The `linux` job is the hard gate: it installs lavapipe, runs the self-test, runs
-`--gpu-info` (**fails** unless the verdict is `ready`) and then renders the headless Vulkan
-screenshot. Until this change it did not: that step ended in `|| true` and the ICD filename was
-hard-coded, so a broken GPU build could sit behind a green run.
+## What the first real run found
+
+Removing the `|| true` from that step is the reason any of this exists. The first lavapipe run
+segfaulted inside `vkCreateGraphicsPipelines`; with the validation layer (`--validation`, added for
+this) and a gdb backtrace in the step, each run named the next real bug:
+
+| # | What it was | Why nothing simpler would have found it |
+|---|---|---|
+| 1 | `VK_KHR_swapchain` was enabled on a device created without a surface | `VUID-vkCreateDevice-ppEnabledExtensionNames-01387`; the headless path has no surface by design |
+| 2 | the composite/bloom/TAA descriptor set layouts were created *after* the sets that use them, so those sets were allocated against `VK_NULL_HANDLE` | validation: `pSetLayouts[0] is VK_NULL_HANDLE`; lavapipe segfaulted a moment later |
+| 3 | no graphics pipeline declared `VK_DYNAMIC_STATE_VIEWPORT`/`SCISSOR`, though every pass calls `vkCmdSetViewport` | invalid usage that a lenient driver hides |
+| 4 | the five Table 1 textures were bound positionally, but the shader order is `mesh/w/u/v/uv` while upload order is `mesh/uv/w/u/v` | validation reports it as a 2D/3D `viewType` mismatch |
+| 5 | set 2 binding 1 (`BundleMeta`) was never declared, and the meta array is the *second half* of the bundle buffer, so it needs an offset | the mesh shader would have read bundle centers as metadata |
+| 6 | push constants were sent to `FRAGMENT|TASK|MESH` while the layout's range is `SHADER_STAGE_ALL` | `VUID-vkCmdPushConstants-offset-01796` |
+| 7 | `HairModelUniforms` declared `styling4` between `styling1` and `styling2` | nothing validates member order; the GPU silently read clump/curl radii as straightness/volume |
+
+Also found on the way: `glslangValidator -V --vn` writes a C header, not SPIR-V, so on any machine
+without `glslc` every `.spv` was text; `hair.mesh` declared its task payload as a block (rejected by
+glslang) and read a mesh-shader output back (write-only per spec); and on Windows the binary exited
+`0xC0000135` (`STATUS_DLL_NOT_FOUND`) because `vulkan-1.dll` lives in `VULKAN_SDK/runtime/x64`, not
+in `Bin` - CMake and the CI job now find it and copy it next to the executable.
+
+## What is verified where
+
+| platform | what runs | result |
+|---|---|---|
+| Linux (lavapipe, CPU Vulkan 1.4) | self-test, `--gpu-info` (must be `ready`), then a headless Vulkan render with the validation layer, then a software render | **passes** |
+| Windows (Vulkan SDK) | build, validation suite, `--gpu-info`, headless render | build + run **pass**; the hosted runner has the loader but no ICD, so `--gpu-info` reports `no-driver` and the render falls back to software |
+| macOS (MoltenVK) | build, validation suite, `--gpu-info`, MoltenVK render (best-effort) | **passes** |
+| iOS simulator (MoltenVK) | build an arm64 iOS Mach-O | **passes** (build gate; a simulator binary cannot be executed by the runner's shell) |
+| Android | shaders, APK build, then an emulator run | APK **builds**; the emulator step is best-effort (needs KVM) |
+
+Still **not** verified: rendering of `src/gpu` on a real GPU, and GPU timings (the paper's 2 ms is an
+RTX 4090). The Linux gate proves the path runs and draws; it does not measure it.
 
 The `windows` and `macos` jobs run `--gpu-info` too, but only report (with a `::warning::`
 annotation) and keep their existing tolerance: a hosted Windows runner has the loader and no ICD,
