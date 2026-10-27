@@ -110,8 +110,10 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           mkdir -p artifacts
-          if ! ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
-                 --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless; then
+          # 640x400 / 1 frame: lavapipe is a CPU Vulkan driver, and what this step proves is
+          # that the path runs at all, not that it is fast.
+          if ! timeout 600 ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
+                 --style 0 --strands 40000 --width 640 --height 400 --frames 1 --headless; then
             echo "the Vulkan render failed; collecting a backtrace"
             sudo apt-get install -y gdb >/dev/null 2>&1 || true
             if command -v gdb >/dev/null 2>&1; then
@@ -186,6 +188,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             Select-String -Path validate.log -Pattern 'FAIL|RESULT' | Select-Object -First 12 |
               ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            Get-Content validate.log -Tail 15 | ForEach-Object { Write-Host "::error::$_" }
             exit 1
           }
       - name: Vulkan diagnostics
@@ -306,6 +309,9 @@ jobs:
         run: |
           # The renderer is platform independent; on iOS it is compiled with MoltenVK as
           # the Vulkan implementation and exercised headlessly by the validation suite.
+          # Everything below is teed into build-ios.log: the configure step can fail as well,
+          # and its message is the only part of an Xcode generator failure that is useful.
+          exec > >(tee build-ios.log) 2>&1
           # Code signing is irrelevant for a simulator binary and its absence stops the Xcode
           # generator with an opaque error, so it is switched off explicitly.
           cmake -B build-ios -G Xcode \
@@ -421,13 +427,29 @@ jobs:
           arch: x86_64
           disable-animations: true
           script: |
+            set -x
             mkdir -p artifacts
-            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-            adb shell am start -n com.silkcrowd.renderer/.MainActivity \
-              --ez headless true --ei seconds 15
-            sleep 20
+            # The manifest declares android.app.NativeActivity (hasCode=false), so that - not a
+            # .MainActivity class - is the component to launch.
+            COMPONENT=com.silkcrowd.renderer/android.app.NativeActivity
+            if ! adb install -r android/app/build/outputs/apk/debug/app-debug.apk; then
+              echo "::error::APK install failed"
+              adb logcat -d | grep -E "PackageManager|INSTALL_" | tail -20
+              exit 1
+            fi
+            adb logcat -c || true
+            adb shell am start -n "$COMPONENT" --ez headless true --ei seconds 15 || {
+              echo "::error::activity launch failed"; exit 1; }
+            sleep 25
             adb exec-out screencap -p > artifacts/android.png
-            adb logcat -d | grep -i silkrowd | tail -40
+            adb logcat -d > logcat.txt || true
+            grep -iE "silkcrowd|vulkan|FATAL|AndroidRuntime" logcat.txt | tail -60 || true
+            if ! adb shell pidof com.silkcrowd.renderer >/dev/null 2>&1; then
+              echo "::error::the SilkCrowd process is not running after the launch window"
+              grep -E "FATAL|AndroidRuntime|DEBUG|silkcrowd" logcat.txt | tail -25 |
+                while IFS= read -r line; do echo "::error::$line"; done
+              exit 1
+            fi
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
