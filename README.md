@@ -355,11 +355,58 @@ visibly wrong and why. The short version:
 female`). Dye, length and curl vary convincingly; the silhouettes do not vary enough - `ponytail`
 and `pixie` do not read as their names, which `docs/COMPARISON.md` lists as a known gap.*
 
-![SilkCrowd against the reference photographs](docs/images/compare_reference.png)
+![SilkCrowd against the reference photographs](docs/images/reference_floor.png)
 
-*Top: the three reference panels supplied for this project. Bottom: the same profile view rendered
-here with `--yaw 78 --studio`. Our bouffant is a smooth helmet with a blunt hem; the reference has
-resolved fibres, ringlet clumps and flyaways. This is the honest gap.*
+*Top: the three reference heads (`docs/images/reference_three.jpg`). Bottom, one-to-one: `--style 4`
+(blunt honey bob), `--style 2` (honey ringlet curls), `--style 9` (longer layered champagne blonde),
+all `--yaw 62 --studio --head-scan female`. The cuts, the part and the hem heights now match; what is
+still missing is per-fibre resolution and the reference's true specular breakup.*
+
+### Videos
+
+| | |
+| --- | --- |
+| ![Bob turntable](docs/media/bob_turntable.gif) | ![Crowd orbit](docs/media/crowd_orbit.gif) |
+| `docs/media/bob_turntable.gif` / `.mp4` - the bob through 360 degrees, 36 frames at `--yaw 0..350` | `docs/media/crowd_orbit.gif` / `.mp4` - 48 heads, orbiting camera |
+| ![Teapot orbit](docs/media/teapot_orbit.gif) | |
+| `docs/media/teapot_orbit.gif` / `.mp4` - the 200-teapot Figure 9 grid (`--scene teapot`) | |
+
+Every clip is generated from this repository with `tools/make_media.sh`, which calls
+`./build/SilkCrowd --screenshot` once per frame and hands the frames to ffmpeg. Nothing is
+pre-rendered elsewhere and nothing is a mock-up.
+
+## The PDF, item by item
+
+`docs/PDF_COVERAGE.md` is the audit: 58 items taken from the paper (equations, figures, tables,
+claims, implementation details) each marked **DONE**, **PARTIAL** (implemented with a documented
+deviation), **N/A** (prose), or **OPEN** (with a reason). The OPEN list is six items long and all
+six are sandbox limitations - no Vulkan driver here, no GLSL validator, no GPU to time, no
+interactive mesh editor - not missing method.
+
+`docs/FAQ.md` answers the four questions that come up every time someone runs this:
+
+* **"Why is the hair on the teapots so small?"** It was two bugs: the roots were on the *lid*
+  (a 0.058 m sphere) and "3 cm" of strand on a 24 cm pot is fur. `buildTeapotHairMesh` now follows
+  the pot's profile of revolution from the knob to the foot, with per-lock lengths and a flared hem.
+* **"I copied the PDF, why does it look weird?"** The PDF does not give you a hair mesh. It gives
+  you the five textures, Eq. 1-12 and the LOD; the *mesh* - fall line, hem as an arc length, the
+  tuck around the temple, area-weighted root density - is where the look lives, and all four of
+  those are documented with the failure each one causes if you skip it.
+* **"No Vulkan driver - fix that."** No loader, no ICD, no device in this sandbox; the app detects
+  it, says so, and renders on the CPU reference rasteriser. On hardware `--gpu` takes the
+  mesh-shader path, or the compute fallback where `VK_EXT_mesh_shader` is missing.
+* **"Why is it slower than the paper?"** The paper's milliseconds are an RTX 4090; the counts that
+  *are* comparable (storage per model, LOD fractions, strand counts) match, and `docs/COMPARISON.md`
+  keeps the two columns apart on purpose.
+
+## Continuous integration and build caching
+
+The workflow caches everything that is slow and nothing that is not: the apt archive keyed on
+`.github/apt-packages.txt`, ccache keyed on the sources with a warm restore key (so a source edit
+recompiles only what changed), the Homebrew download cache keyed on `.github/brew-packages.txt`,
+Gradle's caches and wrapper, and the 2 GB Android NDK keyed on its version. A first Linux run and a
+cached one differ by the apt install and the compile, which is most of the wall clock; the tests
+themselves take about 3 seconds.
 
 ## Per-platform renders
 

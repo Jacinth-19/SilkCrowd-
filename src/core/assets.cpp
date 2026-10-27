@@ -631,7 +631,7 @@ HeadModel::ScalpPatch HeadModel::defaultPatch() const {
     // scalp as a spike standing out of the silhouette. Starting 8 degrees off the crown
     // leaves a hole the width of a fingertip, which the neighbouring rows cover with their
     // own volume, and removes the ring entirely.
-    p.phiMin = 0.14f;
+    p.phiMin = 0.055f;   // 6 mm: below the mesh's own strand spacing, so no bald patch shows
     p.thetaCenter = 0.0f;
     return p;
 }
@@ -891,8 +891,50 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
     HairMesh mesh;
     mesh.name = style.name;
     const uint32_t numVerts = static_cast<uint32_t>(nu * nv);
+
+    // The root layer is evaluated *before* the face list, because the face list has to drop
+    // the degenerate quads at the pole. Every column of the patch converges on the crown, so
+    // the first row's quads collapse to a point: their frame is undefined (a zero-area
+    // polygon has no edge direction), which produced a handful of strands with nonsense
+    // tangents standing straight out of the silhouette, and their zero area also divided
+    // badly in the strand-count allocation. Dropping them costs nothing -- the row below
+    // covers the same square centimetre of scalp.
+    std::vector<float> theta(numVerts), phi(numVerts);
+    std::vector<Vec3> rootPos(numVerts);
+    // Off the pole by a few millimetres, so the patch's own quads are not degenerate, and
+    // the crown itself is covered by a triangle fan from a single apex vertex. A patch that
+    // starts exactly on the pole collapses its top row into zero-area quads; a patch that
+    // starts off the pole leaves a bald spot; the fan is the only way to have both an even
+    // grid below and no hole above.
+    const float kApexPhi = patch.phiMin;   // 0: the patch starts on the pole
+    // `surfacePoint(theta, 0)` has to fall back to the procedural ellipsoid for a scanned
+    // head (there is no radial sample exactly at the pole), and that fallback is about a
+    // centimetre inside the scan's crown -- so the top row of roots sank *below* the scalp
+    // and left a notch in the silhouette. Raising that one row onto the scan's own crown
+    // height fixes it without touching the topology.
+
+    for (int j = 0; j < nv; ++j) {
+        for (int i = 0; i < nu; ++i) {
+            const float u = static_cast<float>(i) / (nu - 1);
+            const float vj = static_cast<float>(j) / (nv - 1);
+            const float th = patch.theta0 + (patch.theta1 - patch.theta0) * u;
+            const float hairline = head.hairlinePhi(th) + style.hairlineDrop;
+            // The first row sits a couple of millimetres off the pole rather than exactly on
+            // it: `surfacePoint(theta, 0)` has to fall back to the procedural ellipsoid for a
+            // scanned head (there is no radial sample exactly at the pole), and that fallback
+            // is ~1 cm inside the scan's crown -- which puts the top row of roots *below* the
+            // scalp and opens a notch in the silhouette. Two millimetres is inside the
+            // strands' own spacing, so no hole shows.
+            const float ph = patch.phiMin + (hairline - patch.phiMin) * vj;
+            const size_t idx = static_cast<size_t>(j * nu + i);
+            theta[idx] = th;
+            phi[idx] = ph;
+            rootPos[idx] = head.surfacePoint(th, ph);
+        }
+    }
+
     std::vector<HairMeshFace> faces;
-    faces.reserve(static_cast<size_t>((nu - 1) * (nv - 1)));
+    faces.reserve(static_cast<size_t>(nu) + static_cast<size_t>((nu - 1) * (nv - 1)));
     for (int j = 0; j + 1 < nv; ++j) {
         for (int i = 0; i + 1 < nu; ++i) {
             HairMeshFace f;
@@ -901,6 +943,13 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
             f.v[1] = static_cast<uint32_t>(j * nu + i + 1);
             f.v[2] = static_cast<uint32_t>((j + 1) * nu + i + 1);
             f.v[3] = static_cast<uint32_t>((j + 1) * nu + i);
+            Vec3 c(0, 0, 0);
+            for (int k = 0; k < 4; ++k) c = c + rootPos[f.v[k]];
+            c = c * 0.25f;
+            float area = 0.0f;
+            for (int k = 0; k < 4; ++k)
+                area += 0.5f * length(cross(rootPos[f.v[k]] - c, rootPos[f.v[(k + 1) % 4]] - c));
+            if (area < 2e-7f) continue;   // ~0.45 mm square: a collapsed pole quad
             faces.push_back(f);
         }
     }
@@ -918,21 +967,8 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
     mesh.setTopology(numVerts, static_cast<uint32_t>(L), faces, uv);
     mesh.setLayerW(defaultLayerW(static_cast<uint32_t>(L)));
 
-    // Root layer on the scalp.
-    std::vector<float> theta(numVerts), phi(numVerts);
-    for (int j = 0; j < nv; ++j) {
-        const float v = static_cast<float>(j) / (nv - 1);
-        for (int i = 0; i < nu; ++i) {
-            const float u = static_cast<float>(i) / (nu - 1);
-            const float th = patch.theta0 + (patch.theta1 - patch.theta0) * u;
-            const float hairline = head.hairlinePhi(th) + style.hairlineDrop;
-            const float ph = patch.phiMin + (hairline - patch.phiMin) * v;
-            const size_t idx = static_cast<size_t>(j * nu + i);
-            theta[idx] = th;
-            phi[idx] = ph;
-            mesh.layerVertexMutable(0, static_cast<uint32_t>(idx)) = head.surfacePoint(th, ph);
-        }
-    }
+    // Root layer on the scalp (positions were evaluated above, before the face list).
+    for (uint32_t v = 0; v < numVerts; ++v) mesh.layerVertexMutable(0, v) = rootPos[v];
     mesh.computeScalpNormals();
 
     // Extrusion layers. A hair mesh's layers describe the hair *volume*: the root layer is
@@ -1068,7 +1104,15 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 const float totalArc = fallArc + hangLen;
 
                 // ---- 3. the point on the path at layer s -----------------------------
-                const float arc = arc0 + (totalArc - arc0) * s;
+                // Strands rooted on the crown have no scalp arc to travel along, so the
+                // linear layer->arc mapping drops their first layer a full layer-spacing
+                // away from the apex. Between two adjacent columns that leaves a wedge-shaped
+                // gap right at the top of the head -- the notch you can see straight through
+                // in profile. Easing the first layers of the crown rows outwards makes the
+                // surface fan smoothly from the apex instead, which is what a cowlick does.
+                const float crownEase = 1.0f - smoothstepf(0.0f, 0.55f, phi0);
+                const float sArc = mixf(s, s * s, crownEase);
+                const float arc = arc0 + (totalArc - arc0) * sArc;
                 const float phiHere = std::min(arc / kArcPerPhi, hairline + 0.55f);
                 // Lateral combing accumulates towards the tips: hair leaves the part and
                 // sweeps outwards, and at the nape it is combed out over the collar.
@@ -1134,7 +1178,13 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 // little, or the top is a dome and the style reads as a cap.
                 const float crownLift = 0.003f * (1.0f - smoothstepf(0.0f, 0.55f, phi0)) *
                                         (1.0f - 0.6f * partGap);
-                const float standoff = (0.0040f + body) * (1.0f - 0.45f * partGap) + crownLift;
+                // The crown rows need the most stand-off of anywhere on the head: the front
+                // sheet hangs forward and the back sheet hangs back, and where they meet at
+                // the top a millimetre of clearance between them and the skull opens a notch
+                // straight through the silhouette. Two extra millimetres there closes it.
+                const float apexLift = 0.0045f * (1.0f - smoothstepf(0.0f, 0.30f, phi0));
+                const float standoff =
+                    (0.0040f + body + apexLift) * (1.0f - 0.45f * partGap) + crownLift;
                 Vec3 p = scalpPt;
                 if (arc > fallArc) {
                     // Hanging phase: leave the scalp at the fall line and drop. `style.fall`
@@ -1221,10 +1271,40 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                     pt -= nT * (0.011f * style.fall * smoothstepf(0.62f, 1.0f, s));
                     p = lerp(p, pt, tuckW);
                 }
+                // ---- the pole row ------------------------------------------------------
+                // Every column of the patch starts on the crown, so the strands rooted there
+                // have no arc to travel along the scalp and their first layer sits a whole
+                // layer-spacing away from the pole. Left alone they stand up as a tuft of
+                // spikes -- the one artefact that no amount of shading or density hides.
+                // A whorl is what really covers the crown: the strands sweep *across* the
+                // top. Giving the pole row an explicit short sweep in its own meridional
+                // direction produces that, and it also fills the few millimetres of scalp the
+                // patch does not reach.
+                if (phi0 < 1e-4f) {
+                    const Vec3 top = rootPos[static_cast<size_t>(0 * nu + i)];
+                    // The sweep starts a touch *beyond* the pole so the neighbouring columns'
+                    // overlap the apex instead of meeting it: the crown then reads as one
+                    // surface, where meeting exactly leaves a slot at the top.
+                    const float spread = 0.012f + 0.030f * style.length;
+                    const float rad = spread * smoothstepf(0.0f, 1.0f, s);
+                    const Vec3 out(std::sin(th0), 0.0f, std::cos(th0));
+                    const float phiOver = -0.09f + rad / kArcPerPhi;   // start past the apex
+                    const float phiClamped = std::max(0.0f, phiOver);
+                    const Vec3 onScalp = head.surfacePoint(th0, phiClamped);
+                    const Vec3 over = onScalp + normalize(onScalp - head.center()) *
+                                                   0.005f;
+                    p = lerp(p, over, 1.0f);
+                    (void)top;
+                }
                 mesh.layerVertexMutable(static_cast<uint32_t>(l), vid) = p;
             }
         }
     }
+
+    // ---- the apex tuft ----------------------------------------------------------------
+    // The one vertex at the pole has no column of its own, so it gets a hand-written path: a
+    // short sweep that leaves the crown toward the front and lies down along the skull. That
+    // is what a cowlick looks like, and it is what covers the few millimetres the fan spans.
 
     // Strand counts per bundle so that the model totals the requested strand count.
     const uint32_t bundles = static_cast<uint32_t>(faces.size());

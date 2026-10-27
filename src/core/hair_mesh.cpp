@@ -63,7 +63,14 @@ void HairMesh::setAreaWeightedStrandCount(uint32_t total) {
     for (size_t i = 0; i < n; ++i) {
         exact[i] = static_cast<double>(total) * area[i] / areaSum;
         count[i] = static_cast<uint32_t>(exact[i]);
-        if (count[i] == 0 && area[i] > 0.05 * meanArea) count[i] = 1;
+        // A floor, not just "at least one". Pure area weighting starves the small faces at
+        // the crown -- which is exactly where the eye looks in a profile, and where a face
+        // with two strands is a hole with a dark scalp behind it. Half the uniform count is
+        // the least that covers a face however small it is.
+        const uint32_t floorCount =
+            static_cast<uint32_t>(std::max(1.0, 0.5 * static_cast<double>(total) /
+                                                   static_cast<double>(n)));
+        if (count[i] < floorCount) count[i] = floorCount;
         assigned += count[i];
     }
     struct Remainder { double frac; size_t index; };
