@@ -102,29 +102,39 @@ jobs:
           ./build/SilkCrowd --gpu-info > artifacts/gpu_info.txt
           cat artifacts/gpu_info.txt
       - name: Headless render (Vulkan, lavapipe)
-        # No VK_ICD_FILENAMES override: the loader finds the lavapipe manifest itself, and a
-        # hard-coded path breaks as soon as Mesa renames it. No `|| true` either - this step
-        # used to "pass" while the GPU path was in fact failing, which is how a broken Vulkan
-        # build could hide behind a green CI run.
-        #
-        # 320x200 / 4k strands / one frame: lavapipe is a CPU Vulkan driver, and what this step
-        # proves is that the path runs, not that it is fast. Anything bigger runs for tens of
-        # minutes; if a timeout happens at this size, the renderer is hanging, not slow.
+        # No VK_ICD_FILENAMES override (the loader finds lavapipe itself) and no `|| true`:
+        # this step used to "pass" while the GPU path was failing, which is how a driver crash
+        # could hide behind a green run. 320x200 / 4k strands / one frame keeps it inside a CI
+        # budget - lavapipe is a CPU Vulkan driver, and the point is that the path runs.
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           mkdir -p artifacts
+          sudo apt-get install -y --no-install-recommends vulkan-validationlayers >/dev/null 2>&1 || true
           RENDER="./build/SilkCrowd --scene head --style 0 --strands 4000 \
                   --width 320 --height 200 --frames 1 --headless"
-          if ! timeout 240 $RENDER --screenshot artifacts/linux_vulkan.png; then
-            echo "::error::the Vulkan render failed or hung; collecting a backtrace"
+          if timeout 240 $RENDER --validation --screenshot artifacts/linux_vulkan.png \
+               > render.log 2>&1; then
+            cat render.log
+          else
+            echo "::error::the Vulkan render failed; see the validation output below"
+            grep -m 12 -E "VUID|Validation Error|validation|error" render.log |
+              while IFS= read -r line; do echo "::error::$line"; done
+            tail -n 12 render.log | while IFS= read -r line; do echo "::error::$line"; done
+            # The compute fallback is the other half of Section 3.2: knowing whether it also
+            # crashes says whether the fault is the mesh pipeline or something shared.
+            if timeout 240 $RENDER --compute --screenshot /tmp/compute.png > compute.log 2>&1; then
+              echo "::error::the compute fallback rendered fine - the fault is the task/mesh pipeline"
+            else
+              grep -m 6 -E "VUID|Validation Error|error" compute.log |
+                while IFS= read -r line; do echo "::error::compute: $line"; done
+            fi
             sudo apt-get install -y gdb >/dev/null 2>&1 || true
             if command -v gdb >/dev/null 2>&1; then
-              timeout 180 gdb -batch -ex run -ex bt --args $RENDER \
-                --screenshot /tmp/crash.png > crash.log 2>&1 || true
-              grep -E "^#[0-9]+ " crash.log | head -12 |
+              timeout 180 gdb -batch -ex run -ex bt --args $RENDER --screenshot /tmp/crash.png \
+                > crash.log 2>&1 || true
+              grep -E "^#[0-9]+ " crash.log | head -10 |
                 while IFS= read -r line; do echo "::error::$line"; done
-              tail -n 10 crash.log | while IFS= read -r line; do echo "::error::$line"; done
             fi
             exit 1
           fi

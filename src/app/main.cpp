@@ -61,6 +61,7 @@ struct Args {
     bool gpu = true;        // prefer Vulkan, fall back to the software rasteriser
     bool software = false;  // force the software path
     bool compute = false;   // force the compute fallback on a mesh-shader device
+    bool validation = false;  // enable VK_LAYER_KHRONOS_validation on the Vulkan path
     int msaa = 1;
     bool taa = true;
     std::string headScan;    // "" = default asset, "none" = procedural
@@ -109,6 +110,7 @@ void printHelp() {
         "                              is missing: the build, the loader, the driver or a device\n"
         "  --software / --cpu          force the dependency-free software rasteriser\n"
         "  --compute                   force the compute-shader fallback (Adreno/UHD path)\n"
+        "  --validation                enable the Vulkan validation layer (needs vulkan-validationlayers)\n"
         "  --msaa N                    1, 2, 4 or 8 (Vulkan path)\n"
         "  --no-taa                    disable temporal anti-aliasing (Vulkan path)\n"
         "  --wind F                    wind speed in m/s (simulation)\n");
@@ -153,6 +155,7 @@ Args parseArgs(int argc, char** argv) {
         else if (s == "--gpu" || s == "--vulkan") a.gpu = true;
         else if (s == "--software" || s == "--cpu") { a.software = true; a.gpu = false; }
         else if (s == "--compute") a.compute = true;
+        else if (s == "--validation") a.validation = true;
         else if (s == "--msaa") a.msaa = std::stoi(next("--msaa"));
         else if (s == "--no-taa") a.taa = false;
         else if (s == "--no-hair") a.drawHair = false;
@@ -752,6 +755,7 @@ bool tryGpuScreenshot(const Args& a, std::string* error) {
     gpu.exposure = a.exposure;
     gpu.shadows = true;
     gpu.wind = a.wind;
+    gpu.validation = a.validation;
     const int rc = runGpuScreenshot(gpu, error);
     return rc == 0;
 }
