@@ -45,6 +45,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
+#include <QVulkanDeviceFunctions>
 #include <QVulkanFunctions>
 #include <QVulkanInstance>
 #include <QVulkanWindow>
@@ -197,8 +198,9 @@ void HairVulkanRenderer::initResources() {
     VkCommandPool pool = window_->graphicsCommandPool();
 
     std::string error;
-    // QVulkanWindow exposes a single queue family: graphics and present are the same one.
-    if (!context_.adopt(instance, physical, device, gfx, window_->presentQueue(),
+    // QVulkanWindow hands out one queue (graphicsQueue) and one queue family; presentation
+    // happens on that same queue, so both family indices are the graphics one.
+    if (!context_.adopt(instance, physical, device, gfx, window_->graphicsQueue(),
                         window_->graphicsQueueFamilyIndex(), window_->graphicsQueueFamilyIndex(),
                         pool, true, &error)) {
         std::fprintf(stderr, "[SilkCrowd] VulkanContext::adopt failed: %s\n", error.c_str());
@@ -244,7 +246,8 @@ void HairVulkanRenderer::initSwapChainResources() {
 }
 
 void HairVulkanRenderer::releaseSwapChainResources() {
-    QVulkanFunctions* vk = window_->vulkanInstance()->functions();
+    QVulkanDeviceFunctions* vk =
+        window_->vulkanInstance()->deviceFunctions(context_.device());
     for (auto& entry : swapchainViews_)
         if (entry.second != VK_NULL_HANDLE)
             vk->vkDestroyImageView(context_.device(), entry.second, nullptr);
@@ -262,8 +265,10 @@ VkImageView HairVulkanRenderer::swapchainView(VkImage image) {
     ci.format = window_->colorFormat();
     ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     // Qt resolves the Vulkan entry points at run time and does not expose the prototypes, so
-    // device-level calls have to go through QVulkanInstance::functions().
-    QVulkanFunctions* vk = window_->vulkanInstance()->functions();
+    // device-level calls go through QVulkanDeviceFunctions (QVulkanFunctions only carries the
+    // instance-level subset).
+    QVulkanDeviceFunctions* vk =
+        window_->vulkanInstance()->deviceFunctions(context_.device());
     if (vk->vkCreateImageView(context_.device(), &ci, nullptr, &view) != VK_SUCCESS) {
         std::fprintf(stderr, "[SilkCrowd] could not create a view for the swapchain image\n");
         return VK_NULL_HANDLE;

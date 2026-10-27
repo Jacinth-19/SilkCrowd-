@@ -73,7 +73,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             # Annotations are the only part of a failure that is always readable through the
             # API, so the actual compiler errors are re-emitted as error annotations too.
-            grep -m 12 -E 'error:|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
+            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
@@ -233,7 +233,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             # Annotations are the only part of a failure that is always readable through the
             # API, so the actual compiler errors are re-emitted as error annotations too.
-            grep -m 12 -E 'error:|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
+            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build.log 2>/dev/null |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
@@ -296,7 +296,7 @@ jobs:
               tail -n 120 build-ios.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            grep -m 12 -E 'error:|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build-ios.log 2>/dev/null |
+            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build-ios.log 2>/dev/null |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi

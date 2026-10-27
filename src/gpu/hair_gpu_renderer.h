@@ -170,6 +170,9 @@ private:
     VulkanContext* ctx_ = nullptr;
     uint32_t width_ = 0, height_ = 0;
     bool hasMeshShaders_ = false;
+    // Extension entry point, resolved with vkGetDeviceProcAddr: the loader is not required to
+    // export vkCmdDrawMeshTasksEXT (MoltenVK does not), so linking against it is not portable.
+    PFN_vkCmdDrawMeshTasksEXT cmdDrawMeshTasksExt_ = nullptr;
     bool forceCompute_ = false;
     bool validation_ = false;
 
