@@ -28,7 +28,7 @@ trap 'rm -rf "$FRAMES"' EXIT
 mkdir -p docs/media docs/images
 
 render() {   # render <dir> <count> <fps> <yaw step> -- <SilkCrowd args...>
-    local dir=$1 count=$2 fps=$3 step=$4; shift 5
+    local dir=$1 count=$2 fps=$3 step=$4; shift 4
     mkdir -p "$FRAMES/$dir"
     for ((i = 0; i < count; ++i)); do
         "$BINARY" --screenshot "$FRAMES/$dir/f$(printf %03d "$i").png" --yaw $((i * step)) "$@" \

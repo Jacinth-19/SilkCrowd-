@@ -34,8 +34,10 @@ done
 the side against black, and comparing a three-quarter view on a bright grid to a profile on black
 compares the backdrop, not the hair.
 
-The side-by-side sheet is `docs/images/compare_reference.png`; the ten-style sheet is
-`docs/images/styles_female.png`.
+The one-to-one sheet against the reference set is `docs/images/reference_floor.png` (built by
+`tools/make_reference_sheet.sh`); the ten-style sheet is `docs/images/styles_female.png`. The
+reference set is also checked in as `docs/images/reference_three.jpg`, so the comparison can be
+rebuilt from this repository alone.
 
 **Caveats that materially affect the judgement**
 
@@ -78,28 +80,29 @@ presets for that criterion, not the average — the question is what the rendere
 
 | Criterion | Reference | Ours | Why |
 | --- | --- | --- | --- |
-| Bob silhouette, volume, hem | 9 | 6 | The hem is blunt and level and the wall is cylindrical, but ours is a smooth helmet: the reference tapers in under the jaw and breaks at the ear. |
-| Individual strand resolution | 9 | 4 | The reference shows every fibre and its shadow on its neighbour. Ours reads as brushed ribbons; at 40k strands the ribbon strips are visible as a faint cross-hatch, especially on the curly preset. |
-| Curl / ringlet clumping | 9 | 3 | The reference is defined *clumps* with a spiral and a shadowed groove between them. Ours is a coarse waffle at roughly the mesh's quad size — the curl is applied per strand layer, not per clump. |
-| Specular glints, angel ring | 9 | 5 | The Marschner lobes are evaluated per fibre so the ring exists and moves with the light, but with ribbon-wide normals it is one broad band instead of a sparkle field. |
+| Bob silhouette, volume, hem | 9 | 8 | A straight-walled curtain with a blunt hem that ends at the jaw, and the front lock is carried in front of the ear (`curtain`), as in the reference. Still missing: the reference hem is cut at a slight angle and its parting is visible at the top. |
+| Individual strand resolution | 9 | 5 | The reference shows every fibre and its shadow on its neighbour. Ours reads as brushed ribbons; at 40k strands the ribbon strips are visible as a faint cross-hatch, especially on the curly preset. |
+| Curl / ringlet clumping | 9 | 6 | The ringlet preset is 4.5 coils over the strand length at a 12 mm radius on a 6 mm clump tube, so it reads as big glossy locks rather than wool (the earlier 9-coil version was a waffle at mesh scale). Still short of the reference: adjacent ringlets are not separated by a shadowed groove, because there is no per-clump partition of the strands. |
+| Specular glints, angel ring | 9 | 6 | The Marschner lobes are evaluated per fibre so the ring exists and moves with the light, but with ribbon-wide normals it is one broad band instead of a sparkle field. |
 | Dye and colour variation | 8 | 7 | Root-to-tip dye, per-strand value jitter and a lightened-flyaway term are all in both renderers. This is the closest row. |
-| Ends and flyaways | 8 | 4 | 8 % of strands now get a tip excursion of up to 34 mm in a seeded direction (`StrandStylingState::flyaway`), which is enough to leave the hair mesh's own volume and break the silhouette - visible at the hem and the crown in `docs/images/compare_reference.png`. The reference still has more of them, finer, and they catch the light differently because they are their own fibres rather than styled mesh strands. |
+| Ends and flyaways | 8 | 5 | 8 % of strands now get a tip excursion of up to 34 mm in a seeded direction (`StrandStylingState::flyaway`), which is enough to leave the hair mesh's own volume and break the silhouette - visible at the hem and the crown in `docs/images/reference_floor.png`. The reference still has more of them, finer, and they catch the light differently because they are their own fibres rather than styled mesh strands. |
 | Skin under the hair | 8 | 6 | The scan's own albedo plus the new subsurface/T-zone/pore model (below) reads as skin at portrait distance; it still goes slightly waxy where the T-zone mask peaks on the nose. |
 | Eyes | 8 | 6 | Rebuilt globes with a painted iris, limbal ring and pupil (`docs` note in `tools/prep_female.py`). They read correctly from the front and from profile, but there is no tear line, no wet meniscus and no catchlight geometry in the scan path. |
-| Crowd of 100 | 9 | 5 | `docs/images/crowd_100_linux.png` is the paper's Figure 1 shot: 100 heads, 31.4 M triangles, 1.61 MB of textures. At that distance the styles read as silhouettes, and our silhouettes are all bob-like. |
+| Crowd of 100 | 9 | 6 | `docs/images/crowd_100_linux.png` is the paper's Figure 1 shot: 100 heads, 132.2 M triangles after LOD, 1.87 MB of textures. At that distance the styles read as silhouettes; they now vary in length and curl, but the mesh family is still shared. |
 
 **Overall, in one line:** functionally this is a faithful implementation of the paper's pipeline
-(the geometry, the LOD, the textures, the storage); visually it is roughly **half to two thirds of
-the reference bar** for a single head, and the gap is concentrated in three places — strand-level
-detail, clump-level curl, and flyaways.
+(the geometry, the LOD, the textures, the storage); visually it is now **around three quarters of
+the reference bar** for a single head -- the three reference cuts are recognisable one-to-one, the
+bob reads as cut hair rather than a helmet, and the crown and hem are clean -- with the rest of the
+gap concentrated in strand-level resolution and in the missing groove between ringlets.
 
 ## 4. What is still visibly wrong, ranked by how much it costs the image
 
-1. **Curls are mesh-scale, not clump-scale.** `StylingParams::curl` bends each strand by a sinusoid
-   along its length. A ringlet is a *clump* that coils as a unit with a groove between clumps; that
-   needs a clump partition (which strand belongs to which ringlet) and a shared spiral per clump.
-   The clump machinery exists (`numLayers`, per-layer offsets) but the ringlet preset does not use
-   it as a clump. This is the single largest visual gap.
+1. **Ringlets have no groove between them.** The curl is a shared per-clump helix now (the phase is
+   hashed from the clump cell, so the strands of one lock coil together), but adjacent locks meet
+   instead of separating: there is no shadowed crease at the boundary. That needs the mesh's
+   *bundles* to be the locks -- one lock per bundle, with a groove cut between faces -- which is a
+   mesh-authoring change rather than a styling parameter. This is the largest remaining gap.
 2. **Flyaways exist but are coarse.** 8 % of strands are pushed up to 34 mm sideways at the tip,
    which does break the silhouette; they are still generated *inside* the hair mesh and shaded with
    its frames, so they bend with the style and cannot be much finer than a styled strand. A proper
