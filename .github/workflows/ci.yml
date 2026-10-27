@@ -200,18 +200,23 @@ jobs:
             exit 1
           }
       - name: Smoke test (which DLL is missing, if any)
-        # A 0xC0000135 exit means the loader could not find a dependency, and Windows prints
-        # nothing at all in that case - so this step names the players instead of guessing.
+        # A 0xC0000135 exit means the loader could not find a dependency and Windows prints
+        # nothing at all, so every finding is emitted as an annotation (the only channel that
+        # is readable when the run log cannot be downloaded).
         run: |
-          Get-ChildItem build/Release | Select-Object Name, Length | Format-Table | Out-String | Write-Output
-          Write-Output "VULKAN_SDK=$env:VULKAN_SDK"
-          where.exe vulkan-1.dll 2>$null | ForEach-Object { Write-Output "found: $_" }
-          foreach ($p in @("$env:WINDIR\System32\vulkan-1.dll", "build/Release/vulkan-1.dll")) {
-            Write-Output "$p exists: $(Test-Path $p)"
+          Write-Output "::error::VULKAN_SDK=$env:VULKAN_SDK"
+          (Get-ChildItem build/Release | Select-Object -ExpandProperty Name) |
+            ForEach-Object { Write-Output "::error::build/Release: $_" }
+          foreach ($p in @("$env:WINDIR\System32\vulkan-1.dll", "build/Release/vulkan-1.dll",
+                           "build/Release/SilkCrowd.exe")) {
+            Write-Output "::error::$p exists: $(Test-Path $p)"
           }
-          & ./build/Release/SilkCrowd.exe --help *>&1 | Select-Object -First 3 | Write-Output
+          $deps = & where.exe vulkan-1.dll 2>$null
+          Write-Output "::error::where vulkan-1.dll: $deps"
+          $out = & ./build/Release/SilkCrowd.exe --help 2>&1 | Select-Object -First 3
           $rc = $LASTEXITCODE
-          Write-Output "smoke exit code: $rc (0x$('{0:X}' -f $rc))"
+          Write-Output "::error::smoke exit code: $rc (0x$('{0:X8}' -f $rc))"
+          $out | ForEach-Object { Write-Output "::error::out: $_" }
           if ($rc -eq -1073741515) { Write-Output "::error::a dependency DLL is missing (0xC0000135)" }
       - name: Validation suite
         run: |
