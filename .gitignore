@@ -30,3 +30,4 @@ build/
 renders/*.png
 __pycache__/
 .vendor/
+tools/__pycache__/
