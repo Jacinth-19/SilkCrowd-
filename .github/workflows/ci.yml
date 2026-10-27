@@ -80,7 +80,12 @@ jobs:
       - name: ccache statistics
         run: ccache --show-stats
       - name: Validation suite
-        run: ./build/SilkCrowd --validate --report docs/validation_report.txt
+        run: |
+          if ! ./build/SilkCrowd --validate --report docs/validation_report.txt | tee validate.log; then
+            grep -E "FAIL|RESULT" validate.log | head -12 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
       - name: Unit tests
         run: ./build/silkcrowd_tests
       - name: Vulkan diagnostics self-test
@@ -105,8 +110,19 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           mkdir -p artifacts
-          ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
-            --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless
+          if ! ./build/SilkCrowd --screenshot artifacts/linux_vulkan.png --scene head \
+                 --style 0 --strands 40000 --width 960 --height 640 --frames 3 --headless; then
+            echo "the Vulkan render failed; collecting a backtrace"
+            sudo apt-get install -y gdb >/dev/null 2>&1 || true
+            if command -v gdb >/dev/null 2>&1; then
+              gdb -batch -ex run -ex bt --args ./build/SilkCrowd --screenshot /tmp/crash.png \
+                --scene head --style 0 --strands 40000 --width 960 --height 640 --frames 3 \
+                --headless > crash.log 2>&1 || true
+              grep -E "^#[0-9]+ " crash.log | head -12 |
+                while IFS= read -r line; do echo "::error::$line"; done
+            fi
+            exit 1
+          fi
           ./build/SilkCrowd --screenshot artifacts/linux_software.png --scene head \
             --style 0 --strands 40000 --width 960 --height 640 --software
       - name: Upload screenshots
@@ -164,7 +180,14 @@ jobs:
             exit 1
           }
       - name: Validation suite
-        run: build/Release/SilkCrowd.exe --validate
+        run: |
+          build/Release/SilkCrowd.exe --validate --report docs/validation_report.txt *>&1 |
+            Tee-Object -FilePath validate.log
+          if ($LASTEXITCODE -ne 0) {
+            Select-String -Path validate.log -Pattern 'FAIL|RESULT' | Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
       - name: Vulkan diagnostics
         # Informational here: a hosted Windows runner has the loader but no ICD, so the expected
         # verdict is `no-driver`. The Linux job is the hard gate; this report is what makes the
@@ -238,7 +261,12 @@ jobs:
             exit 1
           fi
       - name: Validation suite
-        run: ./build/SilkCrowd --validate
+        run: |
+          if ! ./build/SilkCrowd --validate | tee validate.log; then
+            grep -E "FAIL|RESULT" validate.log | head -12 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
       - name: Vulkan diagnostics
         # MoltenVK on a hosted runner is best-effort (it depends on the runner exposing Metal),
         # so this reports instead of gating. The Linux job is the hard gate for the Vulkan path.
@@ -296,8 +324,9 @@ jobs:
               tail -n 120 build-ios.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            grep -m 12 -E 'error:|error C[0-9]|error LNK|Error [0-9]|CMake Error|undefined|Undefined symbols|symbol\(s\) not found|ld: |fatal error|^ *"_' build-ios.log 2>/dev/null |
+            grep -m 12 -E 'error|Error|failed|BUILD FAILED' build-ios.log 2>/dev/null |
               while IFS= read -r line; do echo "::error::$line"; done
+            tail -n 15 build-ios.log | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
       - name: Validation suite on the simulator
