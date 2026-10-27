@@ -17,6 +17,23 @@
 
 #extension GL_GOOGLE_include_directive : require
 
+// The task payload shared by hair.task and hair.mesh (GL_EXT_mesh_shader). It is declared
+// once here so the two shaders cannot drift: the task shader fills it, the mesh shader reads
+// it, and any mismatch in the field list is a silent, very hard to find rendering bug.
+//
+// Declared as a struct + `taskPayloadSharedEXT TaskPayload payload;` rather than as a
+// `taskPayloadSharedEXT TaskPayload { ... } payload;` block: glslang and glslc (16.x and the
+// SDK builds, which is what CI has) only accept blocks for uniform/buffer/in/out and reject
+// the block form with "only uniform, buffer, in, or out blocks are supported".
+struct TaskPayload {
+    uint bundle;
+    uint strandBase;
+    uint numStrands;
+    uint vertexExponent;
+    float gamma;            // Eq. 12, shared by all strands of the bundle
+    float thicknessScale;   // strand-LOD thickness compensation, min(1/L, N)
+};
+
 // Table 1: the five hair mesh textures. Samplers cannot be block members in Vulkan GLSL,
 // so each texture gets its own binding (all in set 4, as laid out by
 // createDescriptorLayouts()). The sampler objects travel with the descriptors.

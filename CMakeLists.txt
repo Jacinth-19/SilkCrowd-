@@ -85,8 +85,12 @@ if(SILKCROWD_GLSLC OR SILKCROWD_GLSLANG)
         COMMENT "glslc ${shader}"
         VERBATIM)
     else()
+      # No --vn here: that flag makes glslangValidator emit a C header (a `const uint32_t
+      # name[] = {...}` array) instead of SPIR-V, so the ".spv" files were text and every
+      # pipeline creation at run time would have failed. --target-env matches the glslc branch:
+      # the task/mesh shaders need SPIR-V 1.4+.
       add_custom_command(OUTPUT ${spv}
-        COMMAND ${SILKCROWD_GLSLANG} -V --vn silk_${shader} -o ${spv} ${src}
+        COMMAND ${SILKCROWD_GLSLANG} -V --target-env vulkan1.2 -o ${spv} ${src}
                 -I${CMAKE_CURRENT_SOURCE_DIR}/shaders
         DEPENDS ${src} ${CMAKE_CURRENT_SOURCE_DIR}/shaders/hair_common.glsl
         COMMENT "glslangValidator ${shader}"

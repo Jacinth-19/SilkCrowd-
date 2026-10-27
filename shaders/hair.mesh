@@ -36,14 +36,9 @@ layout(push_constant) uniform PushConstants {
     uint flags;        // bit 0: shadow pass (use lightModelViewProj)
 } pc;
 
-taskPayloadSharedEXT TaskPayload {
-    uint bundle;
-    uint strandBase;
-    uint numStrands;
-    uint vertexExponent;
-    float gamma;            // Eq. 12, shared by all strands of the bundle
-    float thicknessScale;   // strand-LOD thickness compensation, min(1/L, N)
-} payload;
+// TaskPayload is defined in hair_common.glsl (struct + variable, the form glslang/glslc
+// accept for taskPayloadSharedEXT).
+taskPayloadSharedEXT TaskPayload payload;
 
 // Section 3.3 root sample tables (progressive blue noise, uploaded once).
 layout(std430, set = 3, binding = 0) readonly buffer RootSamples {
@@ -164,14 +159,18 @@ void main() {
         uint i0 = 2u * k;
         gl_MeshVerticesEXT[i0].gl_Position = mvp * vec4(morphed[k] + offset, 1.0);
         gl_MeshVerticesEXT[i0 + 1u].gl_Position = mvp * vec4(morphed[k] - offset, 1.0);
-        outTangent[i0] = normalize((model.model * vec4(tangent[k], 0.0)).xyz);
-        outTangent[i0 + 1u] = outTangent[i0];
+        // Mesh-shader outputs can only be written, never read back (GL_EXT_mesh_shader), so
+        // the shared value of the two ribbon vertices goes through a local first.
+        vec3 tangentWorld = normalize((model.model * vec4(tangent[k], 0.0)).xyz);
+        vec3 positionWorld = (model.model * vec4(morphed[k], 1.0)).xyz;
+        outTangent[i0] = tangentWorld;
+        outTangent[i0 + 1u] = tangentWorld;
         outW[i0] = wCoord[k];
         outW[i0 + 1u] = wCoord[k];
         outSeed[i0] = state.seed;
         outSeed[i0 + 1u] = state.seed;
-        outWorldPos[i0] = (model.model * vec4(morphed[k], 1.0)).xyz;
-        outWorldPos[i0 + 1u] = outWorldPos[i0];
+        outWorldPos[i0] = positionWorld;
+        outWorldPos[i0 + 1u] = positionWorld;
     }
 
     for (uint k = 0u; k < ns; ++k) {

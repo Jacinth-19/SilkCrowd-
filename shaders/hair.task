@@ -37,14 +37,7 @@ layout(push_constant) uniform PushConstants {
 
 #define MAX_TASKS_PER_WORKGROUP 32u
 
-struct TaskPayload {
-    uint bundle;
-    uint strandBase;
-    uint numStrands;
-    uint vertexExponent;
-    float gamma;
-    float thicknessScale;
-};
+// TaskPayload comes from hair_common.glsl, shared with hair.mesh.
 taskPayloadSharedEXT TaskPayload payload;
 
 void main() {
