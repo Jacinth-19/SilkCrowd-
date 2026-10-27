@@ -42,13 +42,16 @@ convert "$TMP/ref1.png" "$TMP/ref2.png" "$TMP/ref3.png" +append \
 convert "$TMP/our1.png" "$TMP/our2.png" "$TMP/our3.png" +append \
     -bordercolor '#1c1c1f' -border 6 -resize 1160x "$TMP/bot.png"
 
-convert "$TMP/top.png" "$TMP/bot.png" -append -background '#121214' "$TMP/stack.png"
-H=$(identify -format %h "$TMP/top.png")
-convert "$TMP/stack.png" -background '#121214' -gravity northwest -splice 0x56 \
-    -font DejaVu-Sans -pointsize 20 -fill '#dfe4ea' \
-    -annotate +14+26 'Reference heads (as supplied): blunt bob / ringlet curls / honey bob' \
-    -annotate "+14+$((H + 34))" \
-    'SilkCrowd, one-to-one: --style 4 / --style 2 / --style 9, --yaw 62 --studio' \
-    docs/images/reference_floor.png
+# Labels go on their own solid strips rather than through -splice: splicing onto a bordered
+# image left a one-pixel light seam where the splice met the border.
+mk_strip() {   # mk_strip <text> <width> <out>
+    convert -size "$2x34" xc:'#121214' -font DejaVu-Sans -pointsize 20 -fill '#dfe4ea' \
+        -gravity west -annotate +14+0 "$1" "$3"
+}
+mk_strip 'Reference heads (as supplied): blunt bob / ringlet curls / honey bob' 1160 "$TMP/l1.png"
+mk_strip 'SilkCrowd, one-to-one: --style 4 / --style 2 / --style 9, --yaw 62 --studio' 1160 "$TMP/l2.png"
+
+convert "$TMP/l1.png" "$TMP/top.png" "$TMP/l2.png" "$TMP/bot.png" -append \
+    -background '#121214' docs/images/reference_floor.png
 
 echo "wrote docs/images/reference_floor.png"
