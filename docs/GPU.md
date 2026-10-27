@@ -140,7 +140,7 @@ in `Bin` - CMake and the CI job now find it and copy it next to the executable.
 | Windows (Vulkan SDK) | build, validation suite, `--gpu-info`, headless render | build + run **pass**; the hosted runner has the loader but no ICD, so `--gpu-info` reports `no-driver` and the render falls back to software |
 | macOS (MoltenVK) | build, validation suite, `--gpu-info`, MoltenVK render (best-effort) | **passes** |
 | iOS simulator (MoltenVK) | build an arm64 iOS Mach-O | **passes** (build gate; a simulator binary cannot be executed by the runner's shell) |
-| Android | shaders, APK build, then an emulator run | APK **builds**; the emulator step is best-effort (needs KVM) |
+| Android | shaders, APK build, APK contents (both ABIs + SPIR-V) | **passes**. The on-device run needs a booted emulator, i.e. KVM, which hosted runners do not provide - do it locally: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk && adb shell am start -n com.silkcrowd.renderer/android.app.NativeActivity --ez headless true --ei seconds 15` |
 
 Still **not** verified: rendering of `src/gpu` on a real GPU, and GPU timings (the paper's 2 ms is an
 RTX 4090). The Linux gate proves the path runs and draws; it does not measure it.

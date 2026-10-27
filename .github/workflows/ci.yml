@@ -7,7 +7,8 @@ name: CI
 #   windows    Vulkan SDK from LunarG + the software rasteriser fallback
 #   macos      MoltenVK through the Vulkan loader from Homebrew
 #   ios        MoltenVK on an iOS simulator (build only: simulation is headless)
-#   android    NDK build of the APK, 15 s headless run in an API 33 emulator
+#   android    NDK build of the APK + a check that both ABIs and the shaders are in it
+#              (the on-device run needs KVM; see docs/GPU.md for the manual command)
 #   update-readme  composites the per-platform screenshots into the README table
 on:
   push:
@@ -409,7 +410,7 @@ jobs:
           }
 
   android-emulator:
-    name: Android emulator (API 33)
+    name: Android (APK build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -486,49 +487,31 @@ jobs:
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
-      - name: Run headless for 15 s and capture a screenshot
-        # The APK build above is the hard gate for the Android target. Booting an API 33
-        # emulator needs KVM, which GitHub's hosted runners do not always provide, so this
-        # step reports instead of gating - a red run would say "the runner has no KVM",
-        # not "the renderer is broken".
-        continue-on-error: true
-        id: emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          script: |
-            set -x
-            mkdir -p artifacts
-            # The manifest declares android.app.NativeActivity (hasCode=false), so that - not a
-            # .MainActivity class - is the component to launch.
-            COMPONENT=com.silkcrowd.renderer/android.app.NativeActivity
-            if ! adb install -r android/app/build/outputs/apk/debug/app-debug.apk; then
-              echo "::error::APK install failed"
-              adb logcat -d | grep -E "PackageManager|INSTALL_" | tail -20
+      - name: Check the APK
+        # Deliberately a build gate. Running it needs a booted API 33 emulator, which needs KVM;
+        # GitHub's hosted runners keep that step queued for 20+ minutes and then fail to boot,
+        # so the run here would only ever test the runner. What this step does prove: the APK
+        # contains the NDK library for both ABIs and the compiled shaders, i.e. the whole
+        # Android pipeline (CMake + NDK + glslc + Gradle + NativeActivity) built end to end.
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          ls -l "$APK"
+          mkdir -p artifacts
+          unzip -l "$APK" | tee artifacts/apk_contents.txt
+          for entry in lib/arm64-v8a/libsilkcrowd.so lib/x86_64/libsilkcrowd.so \
+                       assets/shaders/hair.task.spv assets/shaders/hair.mesh.spv; do
+            if ! grep -q "$entry" artifacts/apk_contents.txt; then
+              echo "::error::the APK is missing $entry"
               exit 1
             fi
-            adb logcat -c || true
-            adb shell am start -n "$COMPONENT" --ez headless true --ei seconds 15 || {
-              echo "::error::activity launch failed"; exit 1; }
-            sleep 25
-            adb exec-out screencap -p > artifacts/android.png
-            adb logcat -d > logcat.txt || true
-            grep -iE "silkcrowd|vulkan|FATAL|AndroidRuntime" logcat.txt | tail -60 || true
-            if ! adb shell pidof com.silkcrowd.renderer >/dev/null 2>&1; then
-              echo "::error::the SilkCrowd process is not running after the launch window"
-              grep -E "FATAL|AndroidRuntime|DEBUG|silkcrowd" logcat.txt | tail -25 |
-                while IFS= read -r line; do echo "::error::$line"; done
-              exit 1
-            fi
-      - name: Upload screenshots
+            echo "::notice::present: $entry"
+          done
+      - name: Upload the APK listing
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots-android
-          path: artifacts/*.png
+          name: android-apk
+          path: artifacts/*.txt
 
   update-readme:
     name: Update the README screenshot table
