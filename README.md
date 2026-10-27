@@ -438,6 +438,11 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | iOS simulator | _pending the first workflow run_ | n/a | n/a | n/a |
 <!-- END CI TABLE -->
 
+The table is filled in by the `update-readme` job, which only runs on `main`; the five platform
+jobs themselves are green on `arena/9565bfb7-silkcrowd` (run `40490962592`): Windows,
+Linux/lavapipe (real Vulkan render with the validation layer), macOS/MoltenVK, iOS, and the
+Android APK gate.
+
 ---
 
 ## Verification status (read this before believing a number)
@@ -454,7 +459,14 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
   `VK_LAYER_KHRONOS_validation` enabled, and that run is what turned the Vulkan path from
   "compiles" into "draws". Getting it there found and fixed seven real bugs, all of them the kind
   that only a driver or the validation layer can find - see `docs/GPU.md` §"What the first real
-  run found". It has not been executed *on this machine* (no Vulkan driver, so no timing can be
+  run found". The **Android** job is green as well and it now means something: the previous green was a
+  Gradle failure hidden by `| tee` without `pipefail`, and getting the APK to link found six
+  more real bugs (C-language target, a `SILKCROWD_ROOT` that pointed at `<repo>/android`,
+  a missing `src/app` include path, two missing sources, and Vulkan 1.3 core entry points
+  that Android's 1.1 `libvulkan.so` does not export - see `docs/GPU.md` §"What the first
+  APK build found"). What still is *not* verified is a frame on a phone: hosting an
+  emulator with KVM is not something the runners offer, so the APK gate proves the build
+  and the packaged assets, and `docs/GPU.md` has the `adb` line for a real handset. It has not been executed *on this machine* (no Vulkan driver, so no timing can be
   taken here): the numbers in the tables come from the software rasteriser, and GPU timings come
   from CI runs on real devices - if a row says `n/a`, that platform has not reported yet.
 * The **Vulkan diagnostics** (`--gpu-info`) *are* executed here, against a synthetic
@@ -485,7 +497,7 @@ regenerated automatically by `tools/update_readme.py` from the CI artifacts.
 | Paper invariants | `./build/SilkCrowd --validate` | **40 passed, 0 failed** |
 | Assets | `./build/SilkCrowd --assets` | 10 presets, 14-19 KB each, 166.1 KB crowd total |
 | Shaders | `glslang` 16 (SPIR-V) | **12/12** compile; every `.spv` starts with the SPIR-V magic. The previous "10 of 12" was two shader bugs (`taskPayloadSharedEXT` declared as a block, and a mesh-shader output read back) plus a `--vn` flag that wrote a C header into the `.spv` |
-| Android entry point | `g++ -fsyntax-only` against stubbed NDK headers | 0 warnings, 0 errors |
+| Android APK | `./gradlew assembleDebug` (NDK 26.1, CMake 3.22, AGP 8.5.2) in CI | **builds**: `libsilkcrowd.so` for `arm64-v8a` + `x86_64`, 12 SPIR-V modules in `assets/shaders`, per-ABI link clean |
 | Qt6 editor | `src/app/qt_app.cpp` | **not compiled here** - no Qt6 in this environment; audited by hand against the Qt6 API (two real bugs fixed) |
 
 ## Repository layout

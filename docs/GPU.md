@@ -132,6 +132,35 @@ glslang) and read a mesh-shader output back (write-only per spec); and on Window
 `0xC0000135` (`STATUS_DLL_NOT_FOUND`) because `vulkan-1.dll` lives in `VULKAN_SDK/runtime/x64`, not
 in `Bin` - CMake and the CI job now find it and copy it next to the executable.
 
+## What the first APK build found (six Android bugs)
+
+The APK job used to be a build that "passed" while producing no APK. Making it honest was the
+whole fix: the C++/shader/NDK/Gradle/NativeActivity chain had never been linked for Android, and
+each layer was hiding the next.
+
+| # | What it was | How it showed up |
+|---|---|---|
+| 1 | `./gradlew ... \| tee gradle.log` without `set -o pipefail` | the step exits with **tee's** status, so Gradle failed and the job went green; the APK check then found no APK and blamed the check |
+| 2 | `project(... LANGUAGES CXX)` while compiling `native_app_glue.c` | CMake: *Cannot determine link language for target* - reproduced locally with a three-line project |
+| 3 | `SILKCROWD_ROOT` was `${CMAKE_CURRENT_SOURCE_DIR}/../../../..`, i.e. `<repo>/android` | every shared `src/core`/`src/gpu` source was a missing file: *Cannot find source file: /src/core/assets.cpp* |
+| 4 | `src/app` was not on the include path | `fatal error: 'scenes.h' file not found` in `android_main.cpp` |
+| 5 | `gltf.cpp`, `image_decode.cpp` (the scanned head) and `third_party/stb` were missing from the NDK target | would have been undefined symbols at link |
+| 6 | `vkCmdBeginRendering`/`vkCmdEndRendering` called directly | `ld.lld: error: undefined symbol: vkCmdBeginRendering` - Android's `libvulkan.so` stops at the Vulkan **1.1** API, so 1.3 core entry points are not exported |
+
+The fix for 6 is `src/gpu/vk_entrypoints.h`: both functions are resolved with
+`vkGetDeviceProcAddr` when the device is created (core name first, `VK_KHR_dynamic_rendering`
+alias second) and `VulkanContext::init`/`adopt` fail with a named error if neither exists. The
+same code path then runs on a 1.1 Android driver and on a desktop 1.3 loader.
+
+The APK gate itself no longer assumes a path or a tool: it finds any `*.apk`, writes a probe
+(`pwd`, top level, `find` results, outputs tree) into the uploaded artifact *before* checking
+anything, and reads the archive with Python's `zipfile` rather than `unzip`. Current result on
+`ubuntu-latest`:
+
+```
+APK ok: libsilkcrowd.so for arm64-v8a/x86_64, 12 SPIR-V modules
+```
+
 ## What is verified where
 
 | platform | what runs | result |
@@ -140,7 +169,7 @@ in `Bin` - CMake and the CI job now find it and copy it next to the executable.
 | Windows (Vulkan SDK) | build, validation suite, `--gpu-info`, headless render | build + run **pass**; the hosted runner has the loader but no ICD, so `--gpu-info` reports `no-driver` and the render falls back to software |
 | macOS (MoltenVK) | build, validation suite, `--gpu-info`, MoltenVK render (best-effort) | **passes** |
 | iOS simulator (MoltenVK) | build an arm64 iOS Mach-O | **passes** (build gate; a simulator binary cannot be executed by the runner's shell) |
-| Android | shaders, APK build, APK contents (both ABIs + SPIR-V) | **passes**. The on-device run needs a booted emulator, i.e. KVM, which hosted runners do not provide - do it locally: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk && adb shell am start -n com.silkcrowd.renderer/android.app.NativeActivity --ez headless true --ei seconds 15` |
+| Android | shaders, full NDK C++ link, APK build, APK contents (both ABIs + SPIR-V) | **passes** (run `40490962592`: `APK ok: libsilkcrowd.so for arm64-v8a/x86_64, 12 SPIR-V modules`). The on-device run needs a booted emulator, i.e. KVM, which hosted runners do not provide - do it locally: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk && adb shell am start -n com.silkcrowd.renderer/android.app.NativeActivity --ez headless true --ei seconds 15` |
 
 One Android-specific detail worth knowing if you port the renderer: Android's `libvulkan.so`
 exports only the Vulkan 1.1 API surface, so `vkCmdBeginRendering`/`vkCmdEndRendering`
