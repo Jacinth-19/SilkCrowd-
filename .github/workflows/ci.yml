@@ -482,11 +482,19 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
+          # pipefail, or `tee` decides the exit status and a failed Gradle build passes this
+          # step (that is exactly what happened: "success" here, no APK afterwards).
+          set -o pipefail
           if ! ./gradlew --no-daemon --build-cache assembleDebug 2>&1 | tee gradle.log; then
-            grep -m 12 -E "error:|Error|FAILURE|What went wrong|Caused by|> Task .* FAILED" gradle.log |
-              while IFS= read -r line; do echo "::error::$line"; done
+            echo "::error::gradle assembleDebug failed - first causes follow"
+            { grep -E "^(FAILURE: |> Task .*FAILED)|\* What went wrong|Caused by:|error:|Could not (resolve|find|install|download|create|determine)" gradle.log || true; } |
+              head -8 | while IFS= read -r line; do echo "::error::$line"; done
+            echo "--- tail of gradle.log"
+            tail -n 25 gradle.log
             exit 1
           fi
+          echo "--- apk produced"
+          find app/build/outputs -name '*.apk' -exec ls -l {} \;
       - name: Check the APK
         # Deliberately a build gate. Running it needs a booted API 33 emulator, which needs KVM;
         # GitHub's hosted runners keep that step queued for 20+ minutes and then fail to boot,
