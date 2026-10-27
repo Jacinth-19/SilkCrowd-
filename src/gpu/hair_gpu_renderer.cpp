@@ -1893,6 +1893,19 @@ bool HairGpuRenderer::createDescriptorLayouts(std::string* error) {
         }
         if (!make(b, &hairTextureLayout_, "hair texture")) return false;
     }
+
+    // A null layout here reaches vkAllocateDescriptorSets and then the driver's pipeline
+    // creation, where lavapipe segfaults instead of reporting anything useful.
+    const std::pair<const char*, VkDescriptorSetLayout> required[] = {
+        {"frame", frameLayout_},         {"model", modelLayout_},
+        {"bundle", bundleLayout_},       {"sample/output", sampleLayout_},
+        {"hair texture", hairTextureLayout_}};
+    for (const auto& layout : required) {
+        if (layout.second == VK_NULL_HANDLE) {
+            if (error) *error = std::string("descriptor layout missing: ") + layout.first;
+            return false;
+        }
+    }
     return true;
 }
 

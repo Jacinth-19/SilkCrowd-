@@ -209,8 +209,11 @@ bool VulkanContext::init(VkInstance instance, VkSurfaceKHR surface, bool enableV
         queueInfos.push_back(qci2);
     }
 
-    std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                                                 VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+    // VK_KHR_swapchain is only legal alongside a surface (validation VUID
+    // vkCreateDevice-ppEnabledExtensionNames-01387), and the headless screenshot path has
+    // none - so it is enabled only when this context owns a surface.
+    std::vector<const char*> deviceExtensions = {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+    if (surface != VK_NULL_HANDLE) deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     if (info_.meshShaders) deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
 
     VkPhysicalDeviceFeatures features{};
