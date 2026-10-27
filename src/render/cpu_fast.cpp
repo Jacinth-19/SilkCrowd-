@@ -155,12 +155,12 @@ inline Vec3 shadeFast(const Scene& scene, Vec3 tangent, Vec3 view, const Vec3& a
 // loaded from there; `presetSet` regenerates (and rewrites) them when the asset is missing, which
 // keeps a from-scratch checkout and a packaged install both working.
 const SampleSet2D& quadNoise() {
-    static const SampleSet2D& set = presetSet(NoiseSet::FastQuad, assetPath("noise"));
-    return set;
+    static const SampleSet2D* set = presetSetPtr(NoiseSet::FastQuad, assetPath("noise"));
+    return *set;
 }
 const SampleSet2D& triangleNoise() {
-    static const SampleSet2D& set = presetSet(NoiseSet::FastTriangle, assetPath("noise"));
-    return set;
+    static const SampleSet2D* set = presetSetPtr(NoiseSet::FastTriangle, assetPath("noise"));
+    return *set;
 }
 
 struct FrameShared {

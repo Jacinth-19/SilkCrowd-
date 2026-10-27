@@ -15,9 +15,9 @@ namespace {
 // One progressive set per domain, shared by every strand and every frame. The sets are baked
 // into `assets/noise/` so a cold run does not pay for the elimination (see root_placement.h).
 const SampleSet2D& sharedSampleSet(bool triangleDomain) {
-    static const SampleSet2D& quad = presetSet(NoiseSet::ReferenceQuad, assetPath("noise"));
-    static const SampleSet2D& tri = presetSet(NoiseSet::ReferenceTriangle, assetPath("noise"));
-    return triangleDomain ? tri : quad;
+    static const SampleSet2D* quad = presetSetPtr(NoiseSet::ReferenceQuad, assetPath("noise"));
+    static const SampleSet2D* tri = presetSetPtr(NoiseSet::ReferenceTriangle, assetPath("noise"));
+    return triangleDomain ? *tri : *quad;
 }
 
 inline Vec3 transformDir(const Mat4& m, Vec3 v) {

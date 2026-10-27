@@ -33,16 +33,31 @@ by writing code, it is closed by that line passing.
 | **P5** | Hardware-blocked (a restatement of `R01`/`R03`/`R23`/`R25`/`R26` + one closed item) | 6 | so they are "declined" rather than "forgotten" |
 
 Total: **48 `R` rows — 45 open, 3 already closed** (`R02` GLSL validation, `R11` baked blue-noise
-sets, `R50` the sanitizer build; all three stay in the tables as pointers to their gates). **Five** of the open rows cannot be
-verified without hardware this sandbox does not have (`R01`, `R03`, `R23`, `R25`, `R26`); §6 lists
-them with their unblocking condition. Everything else can be written and checked here.
+sets, `R50` the sanitizer build; all three stay in the tables as pointers to their gates).
+**Five** of the open rows cannot be verified without hardware this sandbox does not have (`R01`,
+`R03`, `R23`, `R25`, `R26`); §6 lists them with their unblocking condition. Everything else can be
+written and checked here.
 
-**`R11` was implemented in the same turn as this list** — `--bake-noise`, `assets/noise/*.scbn`,
-the loader in `root_placement.h`, a `--validate` check that the files are what this build's
-generator produces (and a CI byte-for-byte rebuild check), and 31 new unit assertions. Measured: cold start of
-`--cpu-budget --scene head --width 640 --height 360` **1,668-1,821 ms → 730-734 ms**. It was the
-smallest row with a real number attached, and it is the template for how the rest should be
-closed: code, a check in `--validate` or the test binary, a measured number in a doc.
+**Two rows were implemented in the same turn as this list**, because a roadmap nobody starts on is
+just a wish list:
+
+* **`R11` — baked blue-noise sets.** `--bake-noise` writes six sets to `assets/noise/*.scbn`
+  (92 KB, 8 192 samples); `blueNoiseSet()` loads them, rejects a file whose parameters or contents
+  do not fit the request, and regenerates when the asset is missing. `--validate` asserts the files
+  are what this build's generator produces, CI re-bakes and fails if the checked-in bytes are
+  stale, and the generator is compiled with `-ffp-contract=off` so the file does not depend on the
+  compiler's FMA policy. Measured: cold start of
+  `--cpu-budget --scene head --width 640 --height 360` **1,668-1,821 ms → 730-734 ms**, i.e. about
+  a second off every run, which is more than a whole front end (1.12 ms is the front end for the
+  *crowd*; for this head it is 0.05-0.08 ms).
+* **`R50` — sanitizers.** `make sanitize` builds the core library and the tests with
+  ASan + UBSan and runs them (**3 351 checks, 0 failures, no leaks**), and a new
+  `Sanitizers (ASan + UBSan)` CI job runs it. It paid for itself immediately: it found a genuine
+  use-after-free — `resetSampleSetStats()` cleared the sample-set cache while `cpu_fast.cpp` and
+  `software_renderer.cpp` held references into it — which is fixed.
+
+That is the template for the rest: code, a check in `--validate` or the test binary, a measured
+number in a doc.
 
 ---
 

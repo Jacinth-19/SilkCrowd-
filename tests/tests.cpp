@@ -308,10 +308,12 @@ void testBakedSampleSets() {
     // 5. The process cache: same parameters give the same object, and a cold cache really does
     //    read the file back (the second call is served from disk, not from the generator).
     resetSampleSetStats();
-    const SampleSet2D& first = presetSet(NoiseSet::ReferenceQuad, dirStr);
-    const SampleSet2D& second = presetSet(NoiseSet::ReferenceQuad, dirStr);
-    CHECK(&first == &second);
-    const size_t firstSize = first.size();  // the reference stays valid across a stats reset
+    // Pointers rather than reference bindings: GCC 13's -Wdangling-reference complains about
+    // `const T& x = f(...)` even when the pointee is a cache entry (see root_placement.h).
+    const SampleSet2D* first = presetSetPtr(NoiseSet::ReferenceQuad, dirStr);
+    const SampleSet2D* second = presetSetPtr(NoiseSet::ReferenceQuad, dirStr);
+    CHECK(first != nullptr && first == second);
+    const size_t firstSize = first->size();  // stays valid across a stats reset
     CHECK(sampleSetStats().loadedFromDisk == 0);   // first call generated and wrote it
     CHECK(sampleSetStats().generated == 1);
     CHECK(sampleSetStats().writeFailures == 0);
@@ -323,25 +325,25 @@ void testBakedSampleSets() {
     fresh.oversample = 2;
     fresh.seed = 90210u;
     CHECK(writeSampleSet(generateBlueNoiseSamples(fresh), fresh, sampleSetPath(fresh, dirStr)));
-    const SampleSet2D& reloaded = blueNoiseSet(fresh, dirStr);
+    const SampleSet2D* reloaded = blueNoiseSetPtr(fresh, dirStr);
     CHECK(sampleSetStats().loadedFromDisk == 1);
     CHECK(sampleSetStats().generated == 0);
-    CHECK(reloaded.size() == 128);
-    CHECK(&first != &reloaded);  // still the cached ReferenceQuad set, untouched
-    CHECK(first.size() == firstSize);
+    CHECK(reloaded && reloaded->size() == 128);
+    CHECK(reloaded != first);  // still the cached ReferenceQuad set, untouched
+    CHECK(first->size() == firstSize);
     const SampleSet2D reference = generateBlueNoiseSamples(fresh);
-    CHECK(reference.size() == reloaded.size());
-    bool sameAsGenerator = reference.size() == reloaded.size();
-    for (size_t i = 0; i < reference.size() && i < reloaded.size(); ++i) {
-        sameAsGenerator = sameAsGenerator && reference.samples[i].x == reloaded.samples[i].x &&
-                          reference.samples[i].y == reloaded.samples[i].y;
+    CHECK(reference.size() == reloaded->size());
+    bool sameAsGenerator = reference.size() == reloaded->size();
+    for (size_t i = 0; i < reference.size() && i < reloaded->size(); ++i) {
+        sameAsGenerator = sameAsGenerator && reference.samples[i].x == reloaded->samples[i].x &&
+                          reference.samples[i].y == reloaded->samples[i].y;
     }
     CHECK(sameAsGenerator);
     // 6. An unwritable directory is not an error: it degrades to regeneration.
     resetSampleSetStats();
     const std::string missingDir = dirStr + "/nested/does/not/exist";
-    const SampleSet2D& degraded = presetSet(NoiseSet::FastQuad, missingDir);
-    CHECK(degraded.size() == 1024);
+    const SampleSet2D* degraded = presetSetPtr(NoiseSet::FastQuad, missingDir);
+    CHECK(degraded && degraded->size() == 1024);
     CHECK(sampleSetStats().writeFailures == 1);
     CHECK(sampleSetStats().generated == 1);
 

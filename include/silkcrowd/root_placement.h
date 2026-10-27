@@ -60,6 +60,14 @@ bool readSampleSet(SampleSet2D& set, const SampleEliminationParams& p, const std
 const SampleSet2D& blueNoiseSet(const SampleEliminationParams& p,
                                 const std::string& cacheDir = std::string());
 
+// The same set, as a pointer. Bind *this* when any argument is a temporary: GCC 13's
+// -Wdangling-reference warns about every `const T& x = f(...)` whose call has a temporary
+// argument, even when the pointee is a process-wide cache entry (which is what these are), and
+// this repository builds with -Werror on five platforms. The pointer makes the lifetime explicit:
+// the sets live until the process exits and are never moved or cleared.
+const SampleSet2D* blueNoiseSetPtr(const SampleEliminationParams& p,
+                                   const std::string& cacheDir = std::string());
+
 // The path `blueNoiseSet` uses for `p` inside `cacheDir`.
 std::string sampleSetPath(const SampleEliminationParams& p, const std::string& cacheDir);
 
@@ -78,6 +86,7 @@ SampleEliminationParams sampleSetPreset(NoiseSet which);
 const char* sampleSetPresetName(NoiseSet which);
 // `blueNoiseSet(sampleSetPreset(which), cacheDir)`.
 const SampleSet2D& presetSet(NoiseSet which, const std::string& cacheDir = std::string());
+const SampleSet2D* presetSetPtr(NoiseSet which, const std::string& cacheDir = std::string());
 // Writes every preset into `dir` (creating it), regenerating as needed. Returns how many files
 // were written; a partial result is possible if the directory cannot be created.
 int writeBakedSampleSets(const std::string& dir);

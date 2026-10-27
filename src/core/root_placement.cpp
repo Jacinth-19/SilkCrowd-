@@ -436,6 +436,10 @@ const SampleSet2D& presetSet(NoiseSet which, const std::string& cacheDir) {
     return blueNoiseSet(sampleSetPreset(which), cacheDir);
 }
 
+const SampleSet2D* presetSetPtr(NoiseSet which, const std::string& cacheDir) {
+    return &presetSet(which, cacheDir);
+}
+
 int writeBakedSampleSets(const std::string& dir) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -443,10 +447,14 @@ int writeBakedSampleSets(const std::string& dir) {
     for (int i = 0; i < static_cast<int>(NoiseSet::Count); ++i) {
         const NoiseSet which = static_cast<NoiseSet>(i);
         const SampleEliminationParams p = sampleSetPreset(which);
-        const SampleSet2D& set = presetSet(which);
-        if (writeSampleSet(set, p, sampleSetPath(p, dir))) ++written;
+        const SampleSet2D* set = presetSetPtr(which);
+        if (set && writeSampleSet(*set, p, sampleSetPath(p, dir))) ++written;
     }
     return written;
+}
+
+const SampleSet2D* blueNoiseSetPtr(const SampleEliminationParams& p, const std::string& cacheDir) {
+    return &blueNoiseSet(p, cacheDir);
 }
 
 const SampleSetStats& sampleSetStats() { return g_stats; }
