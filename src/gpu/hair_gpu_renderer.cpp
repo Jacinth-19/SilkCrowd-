@@ -125,6 +125,20 @@ bool HairGpuRenderer::writeSampleDescriptors() {
 
 namespace {
 
+// Every pass sets its viewport and scissor with vkCmdSetViewport/vkCmdSetScissor, so the
+// pipelines must declare them dynamic: with a static VkPipelineViewportStateCreateInfo and
+// no VkPipelineDynamicStateCreateInfo, pViewports/pScissors stay null, which is invalid usage
+// and crashed lavapipe inside vkCreateGraphicsPipelines (CI, x86_64).
+VkPipelineDynamicStateCreateInfo dynamicViewportScissor() {
+    static const VkDynamicState states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                            VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = states;
+    return dynamic;
+}
+
 // VkSampleCountFlagBits values are bit masks, so they AND directly with the
 // framebufferColorSampleCounts / framebufferDepthSampleCounts device limits.
 VkSampleCountFlagBits sampleCountFlag(int samples) {
@@ -208,6 +222,8 @@ bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
         ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         gp.pInputAssemblyState = &ia;
         gp.pViewportState = &vp;
+        VkPipelineDynamicStateCreateInfo dynamic = dynamicViewportScissor();
+        gp.pDynamicState = &dynamic;
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rs.polygonMode = VK_POLYGON_MODE_FILL;
         rs.cullMode = VK_CULL_MODE_NONE;
@@ -300,6 +316,8 @@ bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
         gp.pVertexInputState = &emptyInput;
         gp.pInputAssemblyState = &ia;
         gp.pViewportState = &vp;
+        VkPipelineDynamicStateCreateInfo dynamic = dynamicViewportScissor();
+        gp.pDynamicState = &dynamic;
         gp.pRasterizationState = &rs;
         gp.pMultisampleState = &ms;
         gp.pDepthStencilState = &depth;
@@ -394,6 +412,8 @@ bool HairGpuRenderer::createMainPassPipelines(std::string* error) {
         gp.pVertexInputState = &input;
         gp.pInputAssemblyState = &ia;
         gp.pViewportState = &vp;
+        VkPipelineDynamicStateCreateInfo dynamic = dynamicViewportScissor();
+        gp.pDynamicState = &dynamic;
         gp.pRasterizationState = &rs;
         gp.pMultisampleState = &ms;
         gp.pDepthStencilState = &depth;
@@ -668,6 +688,8 @@ bool HairGpuRenderer::createPipelines(std::string* error) {
             gp.pVertexInputState = &emptyInput;
             gp.pInputAssemblyState = &ia;
             gp.pViewportState = &vp;
+            VkPipelineDynamicStateCreateInfo dynamic = dynamicViewportScissor();
+            gp.pDynamicState = &dynamic;
             gp.pRasterizationState = &rs;
             gp.pMultisampleState = &ms;
             gp.pColorBlendState = &blendState;
