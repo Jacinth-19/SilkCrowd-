@@ -210,6 +210,16 @@ hair or as a wig. Every strand is authored along its own **arc length in metres*
   seed only (so nothing is stored and the GPU path derives the same values);
 * **volume** is thin at the crown, thickest through the body of the hair and gone at the hem, and
   is *not* uniformly inflated (a uniform inflation reads as a helmet);
+* the **crown** needs its own treatment, and it is the one place where the two hanging sheets
+  (front and back) have to become one surface. Three things make it work, and all three were
+  found by looking at renders rather than at the paper: the arc of the crown rows eases in as
+  `s^2` instead of `s`, so the apex row fans outwards instead of dropping a full layer-spacing
+  away from the pole; the patch starts on the pole exactly (starting off it leaves a bald spot,
+  and a triangle-fan apex breaks the Figure 3e quad layout the tests check); and three Laplacian
+  passes over the top third of the scalp, per layer, relax the crease where the two sheets cross.
+  Without the relax the crown carries a ridge that stands off the silhouette in every
+  three-quarter view -- it is a fold in the geometry, so no amount of stand-off or shading hides
+  it;
 * the parting drives a hem seam and the lateral drift, which accumulates towards the tips so the
   hair sweeps away from the part instead of leaving it as a wall. Because the hemisphere above the
   hairline is tagged in *both* renderers - `Mesh::scalpMask` for a scanned head, `FaceMasks::scalp`

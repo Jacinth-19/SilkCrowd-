@@ -1184,7 +1184,9 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 // sheet hangs forward and the back sheet hangs back, and where they meet at
                 // the top a millimetre of clearance between them and the skull opens a notch
                 // straight through the silhouette. Two extra millimetres there closes it.
-                const float apexLift = 0.0045f * (1.0f - smoothstepf(0.0f, 0.30f, phi0));
+                // The apex row gets no extra lift: the crown easing already spaces its layers
+                // out, so lifting it too leaves a spike standing off the top of the head.
+                const float apexLift = 0.0f;
                 const float standoff =
                     (0.0040f + body + apexLift) * (1.0f - 0.45f * partGap) + crownLift;
                 Vec3 p = scalpPt;
@@ -1282,22 +1284,9 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
                 // top. Giving the pole row an explicit short sweep in its own meridional
                 // direction produces that, and it also fills the few millimetres of scalp the
                 // patch does not reach.
-                if (phi0 < 1e-4f) {
-                    const Vec3 top = rootPos[static_cast<size_t>(0 * nu + i)];
-                    // The sweep starts a touch *beyond* the pole so the neighbouring columns'
-                    // overlap the apex instead of meeting it: the crown then reads as one
-                    // surface, where meeting exactly leaves a slot at the top.
-                    const float spread = 0.012f + 0.030f * style.length;
-                    const float rad = spread * smoothstepf(0.0f, 1.0f, s);
-                    const Vec3 out(std::sin(th0), 0.0f, std::cos(th0));
-                    const float phiOver = -0.09f + rad / kArcPerPhi;   // start past the apex
-                    const float phiClamped = std::max(0.0f, phiOver);
-                    const Vec3 onScalp = head.surfacePoint(th0, phiClamped);
-                    const Vec3 over = onScalp + normalize(onScalp - head.center()) *
-                                                   0.005f;
-                    p = lerp(p, over, 1.0f);
-                    (void)top;
-                }
+                // The apex row needs no special case at all: the crown easing above fans its
+                // layers outwards, which is exactly the coverage the pole needs. (Sweeps and
+                // lifts added here all showed up as a tuft standing off the top of the head.)
                 mesh.layerVertexMutable(static_cast<uint32_t>(l), vid) = p;
             }
         }
@@ -1307,6 +1296,44 @@ HairMesh buildHairMesh(const HeadModel& head, const HairStyleSpec& style) {
     // The one vertex at the pole has no column of its own, so it gets a hand-written path: a
     // short sweep that leaves the crown toward the front and lies down along the skull. That
     // is what a cowlick looks like, and it is what covers the few millimetres the fan spans.
+
+    // ---- relax the crown ----------------------------------------------------------------
+    // Two sheets of hair meet at the top of the head: the front section, which hangs forward,
+    // and the back, which hangs back. Where they meet, the layer slices cross and leave a
+    // crease -- visible as a ridge standing off the crown in every three-quarter view, and not
+    // fixable by stand-off, tuck weight or shading, because it is a fold in the geometry.
+    // Three Laplacian passes over the top third of the scalp, per layer, pull the crease flat
+    // while leaving the silhouette below the ear untouched (the hem and the fall line are the
+    // parts that must not move).
+    {
+        std::vector<std::vector<uint32_t>> adj(numVerts);
+        for (const HairMeshFace& f : faces)
+            for (uint32_t k = 0; k < f.count; ++k) {
+                const uint32_t a = f.v[k], b = f.v[(k + 1) % f.count];
+                adj[a].push_back(b);
+                adj[b].push_back(a);
+            }
+        std::vector<float> crownW(numVerts, 0.0f);
+        for (uint32_t v = 0; v < numVerts; ++v)
+            crownW[v] = 1.0f - smoothstepf(0.16f, 0.55f, phi[v]);
+        for (int l = 1; l < L; ++l) {
+            for (int iter = 0; iter < 3; ++iter) {
+                std::vector<Vec3> next(numVerts);
+                for (uint32_t v = 0; v < numVerts; ++v) {
+                    const Vec3 cur = mesh.layerVertex(static_cast<uint32_t>(l), v);
+                    next[v] = cur;
+                    if (crownW[v] <= 0.0f || adj[v].empty()) continue;
+                    Vec3 sum(0, 0, 0);
+                    for (uint32_t j : adj[v])
+                        sum = sum + mesh.layerVertex(static_cast<uint32_t>(l), j);
+                    const Vec3 avg = sum * (1.0f / static_cast<float>(adj[v].size()));
+                    next[v] = lerp(cur, avg, 0.55f * crownW[v]);
+                }
+                for (uint32_t v = 0; v < numVerts; ++v)
+                    mesh.layerVertexMutable(static_cast<uint32_t>(l), v) = next[v];
+            }
+        }
+    }
 
     // Strand counts per bundle so that the model totals the requested strand count.
     const uint32_t bundles = static_cast<uint32_t>(faces.size());

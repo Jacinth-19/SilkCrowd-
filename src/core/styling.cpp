@@ -379,6 +379,10 @@ StrandStylingState makeStrandStylingState(const StylingParams& p, Vec2 uv, uint3
     // own volume, which is what breaks a groomed silhouette. Everything about them comes from
     // the strand's seed, so nothing is stored and the GPU path derives the same values.
     const float fly = hashToFloat(pcgHash(s.seed + 9u));
+    // Flyaways live at the hem and the nape, never at the site of the root: a fibre that
+    // leaves the scalp at an angle near the crown stands straight off the silhouette, and one
+    // of those on top of the head reads as a sprout. `bodyMask` in styleStrandVertex tapers
+    // them near the root; this keeps them off the crown altogether.
     if (fly > 0.92f) s.flyaway = (fly - 0.92f) / 0.08f;
     s.flyawayAngle = hashToFloat(pcgHash(s.seed + 10u)) * 2.0f * kPi;
     s.lengthScale = 1.0f - p.lengthJitter * hashToFloat(pcgHash(s.seed + 3u));
