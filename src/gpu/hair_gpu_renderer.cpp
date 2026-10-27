@@ -1,5 +1,7 @@
 #include "hair_gpu_renderer.h"
 
+#include "vk_entrypoints.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1225,7 +1227,7 @@ void HairGpuRenderer::recordBloomPass(VkCommandBuffer cmd, const RenderOptions& 
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &color;
-    vkCmdBeginRendering(cmd, &ri);
+    vk13::beginRendering(cmd, &ri);
     VkViewport vp{0.0f, 0.0f, static_cast<float>(bw), static_cast<float>(bh), 0.0f, 1.0f};
     VkRect2D sc{{0, 0}, {bw, bh}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -1237,7 +1239,7 @@ void HairGpuRenderer::recordBloomPass(VkCommandBuffer cmd, const RenderOptions& 
     vkCmdPushConstants(cmd, compositePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(params), params);
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRendering(cmd);
+    vk13::endRendering(cmd);
     ctx_->imageLayoutTransition(cmd, bloomImage_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1267,7 +1269,7 @@ void HairGpuRenderer::recordComposite(VkCommandBuffer cmd, VkImage target, uint3
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &color;
-    vkCmdBeginRendering(cmd, &ri);
+    vk13::beginRendering(cmd, &ri);
     VkViewport vp{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
     VkRect2D sc{{0, 0}, {width, height}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -1281,7 +1283,7 @@ void HairGpuRenderer::recordComposite(VkCommandBuffer cmd, VkImage target, uint3
     vkCmdPushConstants(cmd, compositePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(params), params);
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRendering(cmd);
+    vk13::endRendering(cmd);
 }
 
 bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& options,
@@ -1413,9 +1415,9 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
         ri.renderArea = {{0, 0}, {2048, 2048}};
         ri.layerCount = 1;
         ri.pDepthAttachment = &depth;
-        vkCmdBeginRendering(commandBuffer_, &ri);
+        vk13::beginRendering(commandBuffer_, &ri);
         if (options.drawShadows && options.drawHair) recordShadowPass(commandBuffer_, camera);
-        vkCmdEndRendering(commandBuffer_);
+        vk13::endRendering(commandBuffer_);
         ctx_->imageLayoutTransition(commandBuffer_, shadowImage_,
                                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1466,7 +1468,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &color;
     ri.pDepthAttachment = &depth;
-    vkCmdBeginRendering(commandBuffer_, &ri);
+    vk13::beginRendering(commandBuffer_, &ri);
 
     VkViewport vp{0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_), 0.0f, 1.0f};
     VkRect2D sc{{0, 0}, {width_, height_}};
@@ -1542,7 +1544,7 @@ bool HairGpuRenderer::renderFrame(const Camera& camera, const RenderOptions& opt
     }
 
     if (options.drawHair) recordHairDraw(commandBuffer_, camera, options, false);
-    vkCmdEndRendering(commandBuffer_);
+    vk13::endRendering(commandBuffer_);
 
     // ---- temporal resolve, then bloom over the resolved image ----
     if (taaEnabled_ && taaPipeline_ != VK_NULL_HANDLE) {
@@ -2602,7 +2604,7 @@ void HairGpuRenderer::recordTaaPass(VkCommandBuffer cmd, bool reset) {
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &color;
-    vkCmdBeginRendering(cmd, &ri);
+    vk13::beginRendering(cmd, &ri);
     VkViewport vp{0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_), 0.0f, 1.0f};
     VkRect2D sc{{0, 0}, {width_, height_}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -2614,7 +2616,7 @@ void HairGpuRenderer::recordTaaPass(VkCommandBuffer cmd, bool reset) {
     vkCmdPushConstants(cmd, taaPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params),
                        params);
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRendering(cmd);
+    vk13::endRendering(cmd);
 
     // The resolved frame becomes the next frame's history, and the composite/bloom passes
     // read it instead of the raw HDR target.

@@ -142,6 +142,13 @@ in `Bin` - CMake and the CI job now find it and copy it next to the executable.
 | iOS simulator (MoltenVK) | build an arm64 iOS Mach-O | **passes** (build gate; a simulator binary cannot be executed by the runner's shell) |
 | Android | shaders, APK build, APK contents (both ABIs + SPIR-V) | **passes**. The on-device run needs a booted emulator, i.e. KVM, which hosted runners do not provide - do it locally: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk && adb shell am start -n com.silkcrowd.renderer/android.app.NativeActivity --ez headless true --ei seconds 15` |
 
+One Android-specific detail worth knowing if you port the renderer: Android's `libvulkan.so`
+exports only the Vulkan 1.1 API surface, so `vkCmdBeginRendering`/`vkCmdEndRendering`
+(promoted to core in 1.3) do not link there - the APK build fails with `undefined symbol`.
+Both are resolved through `vkGetDeviceProcAddr` at device creation
+(`src/gpu/vk_entrypoints.h`), trying the core names first and the `VK_KHR_dynamic_rendering`
+aliases second, so the same code path runs on Android 1.1 drivers and on desktop.
+
 Still **not** verified: rendering of `src/gpu` on a real GPU, and GPU timings (the paper's 2 ms is an
 RTX 4090). The Linux gate proves the path runs and draws; it does not measure it.
 

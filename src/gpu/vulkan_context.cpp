@@ -1,10 +1,36 @@
 #include "vulkan_context.h"
 
+#include "vk_entrypoints.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 namespace silk {
+namespace vk13 {
+// Resolved per device by resolve(): Android's libvulkan.so exports only the Vulkan 1.1 API,
+// so the 1.3 core dynamic-rendering entry points are not linkable there.
+PFN_vkCmdBeginRendering cmdBeginRendering = nullptr;
+PFN_vkCmdEndRendering cmdEndRendering = nullptr;
+
+bool resolve(VkDevice device) {
+    if (device == VK_NULL_HANDLE) return false;
+    auto load = [device](const char* name) {
+        return reinterpret_cast<void*>(vkGetDeviceProcAddr(device, name));
+    };
+    if (!cmdBeginRendering)
+        cmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(load("vkCmdBeginRendering"));
+    if (!cmdBeginRendering)  // Vulkan 1.1 driver with VK_KHR_dynamic_rendering
+        cmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(load("vkCmdBeginRenderingKHR"));
+    if (!cmdEndRendering)
+        cmdEndRendering = reinterpret_cast<PFN_vkCmdEndRendering>(load("vkCmdEndRendering"));
+    if (!cmdEndRendering)
+        cmdEndRendering = reinterpret_cast<PFN_vkCmdEndRendering>(load("vkCmdEndRenderingKHR"));
+    return cmdBeginRendering != nullptr && cmdEndRendering != nullptr;
+}
+
+}  // namespace vk13
+
 namespace {
 
 const char* tierName(HardwareTier t) {
@@ -252,6 +278,11 @@ bool VulkanContext::init(VkInstance instance, VkSurfaceKHR surface, bool enableV
     vkGetDeviceQueue(device_, graphicsFamily_, 0, &graphicsQueue_);
     vkGetDeviceQueue(device_, presentFamily_, 0, &presentQueue_);
     fragmentStoresAndAtomics_ = features.fragmentStoresAndAtomics == VK_TRUE;
+    if (!vk13::resolve(device_)) {
+        error_ = "the device exposes neither vkCmdBeginRendering nor vkCmdBeginRenderingKHR";
+        if (error) *error = error_;
+        return false;
+    }
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -294,6 +325,11 @@ bool VulkanContext::adopt(VkInstance instance, VkPhysicalDevice physical, VkDevi
     info_ = detectDevice(props, totalMB, meshShaders);
     if (device_ == VK_NULL_HANDLE) {
         error_ = "adopt() called without a device";
+        if (error) *error = error_;
+        return false;
+    }
+    if (!vk13::resolve(device_)) {
+        error_ = "the device exposes neither vkCmdBeginRendering nor vkCmdBeginRenderingKHR";
         if (error) *error = error_;
         return false;
     }
