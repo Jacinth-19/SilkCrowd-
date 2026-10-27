@@ -198,7 +198,7 @@ Per parallel lane the CPU is within **7.5x** of the paper's GPU (40.4k vs 305k s
 lane); 16,384 / 2 = 8,192 is the lane-count ratio and essentially the whole wall-clock gap. So
 the deficit is cores, not algorithm - and the part of the frame that is genuinely CPU work fits
 inside the paper's budget. `docs/CPU_2MS.md` §7 has the arithmetic and §10 lists exactly which
-shortcuts the fast path takes so that nobody reads its 665 ms hero frame as the reference
+shortcuts the fast path takes so that nobody reads its 661 ms hero frame as the reference
 renderer getting faster (it is unchanged).
 
 ![The fast CPU path](docs/images/cpu_fast_head.png)

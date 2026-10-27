@@ -14,8 +14,8 @@ Short answer, measured on this machine, with nothing projected or extrapolated:
   The wall-clock gap is hardware, not algorithm.
 * **Yes for the part of the frame the CPU actually owns.** All of the per-frame CPU work the
   paper's method needs — Eq. 7–12 for **4,130 bundles across 100 models**, the Eq. 8 strand
-  counts, frustum culling and the draw-order sort — runs in **1.17 ms**, i.e. **inside the
-  2 ms budget with 1.7× to spare**. That is the number a real (GPU) implementation pays on the
+  counts, frustum culling and the draw-order sort — runs in **1.12 ms**, i.e. **inside the
+  2 ms budget with 1.8× to spare**. That is the number a real (GPU) implementation pays on the
   CPU every frame, and it fits.
 
 Everything below is reproducible with the commands in §9.
@@ -69,7 +69,7 @@ bit-identical ones, not an approximation:
 | fast path: one arena instead of four `std::vector`s per strand; no per-strand allocation | 555 ms | **~190 ms** | same arithmetic, different scratch space |
 
 Net effect on the reference generator (same 10k strands, 33 vertices each): **120.1 ms →
-94.3 ms**. Effect on the whole hero frame: reference 2,534 ms → fast path **665 ms** (3.8×),
+94.3 ms**. Effect on the whole hero frame: reference 2,534 ms → fast path **661 ms** (3.8×),
 of which the phase split is in §5.
 
 ## 4. Hardware this was measured on
@@ -192,7 +192,7 @@ geometry is identical to the reference, the shading is not — see §10.
 | per-thread buffers composited in depth order | a single-threaded frame would serialise everything | only changes blending order *between* thread ranges (the ranges are depth-sorted, so the error is confined to overlapping bundles at the seam) |
 
 None of these changes the amount of *geometry* the method has to produce, which is what the
-comparison in §6 is about. They are listed so that nobody reads the fast path's 665 ms as "the
+comparison in §6 is about. They are listed so that nobody reads the fast path's 661 ms as "the
 reference renderer got 3.8× faster" — the reference renderer is unchanged and still uses the
 full model.
 

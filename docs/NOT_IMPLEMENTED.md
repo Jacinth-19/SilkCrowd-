@@ -19,7 +19,7 @@ printed warning or a flag.
 | # | What the paper has | What this repository has | Why | What it would take |
 | --- | --- | --- | --- | --- |
 | 1.1 **[H]** | Frames rendered on an RTX 4090 | A Vulkan 1.3 path that is executed in CI on Mesa **lavapipe** (CPU Vulkan 1.4) with the Khronos validation layer | this sandbox has no GPU and no Vulkan driver; the wrapper answers `--gpu-info` with which piece is missing | run `SilkCrowd --gpu` on any machine with a Vulkan 1.3 driver |
-| 1.2 **[H]** | **2 ms** for 100 characters, 1.8 ms for 200 teapots, 47 ms without LOD | the same *workloads*, measured on the CPU: 25.5 s, and the LOD-vs-no-LOD ratio at crowd distance | no GPU; see `docs/CPU_2MS.md` for the full analysis. Per parallel lane the CPU is within 8× of the paper's GPU, so the gap is lane count (8,192×) | the reference hardware, or ~1,000 cores |
+| 1.2 **[H]** | **2 ms** for 100 characters, 1.8 ms for 200 teapots, 47 ms without LOD | the same *workloads*, measured on the CPU: 24.8 s, and the LOD-vs-no-LOD ratio at crowd distance | no GPU; see `docs/CPU_2MS.md` for the full analysis. Per parallel lane the CPU is within 7.5× of the paper's GPU, so the gap is lane count (8,192×) | the reference hardware, or ~3,300 cores |
 | 1.3 **[H]** | 8× MSAA | MSAA is implemented (`setSampleCount`, resolve to `RGBA16F`/`D32`) and *clamped to what the device reports*; lavapipe exercises the code, but the visual result is verified only on CI | needs a real 8×-capable device to look at | a GPU run, then compare against `docs/images/` |
 | 1.4 **[H]** | A frame on a phone (Adreno, the paper's compute fallback path) | the APK is built and checked in CI (both ABIs + 12 SPIR-V modules) but never executed | hosted runners cannot boot an emulator without KVM; no device here | `adb install` + the command in `docs/GPU.md` |
 | 1.5 **[H]** | GPU memory bandwidth / cache behaviour of the texture layout | the layout is validated numerically; its *hardware* cost (texture-unit throughput, cache residency of 13–21 KB per model) is not measured | needs hardware counters | Nsight/RGP capture |
@@ -66,7 +66,7 @@ the sandbox. The images are what that costs:
 | --- | --- | --- |
 | 4.1 | Look at or reverse-engineer the authors' code | the instruction was "the paper is the only source of truth" |
 | 4.2 | Invent a GPU timing | every millisecond in the docs was produced by a command in the same document, on the machine named next to it |
-| 4.3 | Claim parity with the paper's 2 ms | `docs/CPU_2MS.md` states the 12,700× gap and explains it; the only thing that fits in 2 ms is the front end (1.17 ms), and that is labelled as CPU-only work |
+| 4.3 | Claim parity with the paper's 2 ms | `docs/CPU_2MS.md` states the 12,400× gap and explains it; the only thing that fits in 2 ms is the front end (1.12 ms), and that is labelled as CPU-only work |
 | 4.4 | Present the fast CPU path's frame as an image of the renderer | its shading and shadowing are simplified; `docs/images/` is produced by the reference path only |
 | 4.5 | Tune the fast path against the reference path's *pixels* | the two differ by design; the guarantee is on the **geometry**, which is asserted bit-identical in `tests/tests.cpp` |
 
@@ -81,5 +81,5 @@ the sandbox. The images are what that costs:
 * **Not implemented**: hand-authored meshes and their editing UI, per-strand shadow rays, a
   tighter texture packing, SIMD, GPU-side phase profiling, and (unverifiable here) the paper's
   GPU timings, its 8× MSAA look and its on-device Android frame.
-* **Not possible here**: 2 ms on two cores. Measured: 25.5 s for the same scene, 1.17 ms for
+* **Not possible here**: 2 ms on two cores. Measured: 24.8 s for the same scene, 1.12 ms for
   the part of the frame that is CPU work.
