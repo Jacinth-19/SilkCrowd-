@@ -247,12 +247,23 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           build/Release/SilkCrowd.exe --gpu-info | Tee-Object -FilePath artifacts/gpu_info.txt
-          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Vulkan path unavailable on this runner" }
-      - name: Headless render (5 s)
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { Write-Host "::warning::Vulkan path unavailable on this runner (verdict exit $rc)" }
+          # The exit code of the last native command would otherwise fail the step for doing
+          # exactly what it is here to do (report a machine without an ICD).
+          exit 0
+      - name: Headless render
+        # A hosted Windows runner has the loader but no Vulkan ICD, so this renders on the
+        # software rasteriser (the app says so and falls back). Small on purpose: the software
+        # path is ~5 s per frame at this size.
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           build/Release/SilkCrowd.exe --screenshot artifacts/windows.png --scene head `
-            --style 4 --strands 40000 --width 960 --height 640 --frames 5 --headless
+            --style 4 --strands 20000 --width 480 --height 320 --frames 1 --headless
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::the headless render failed with exit code $LASTEXITCODE"
+            exit 1
+          }
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         with:
