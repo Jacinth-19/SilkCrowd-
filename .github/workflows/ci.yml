@@ -60,7 +60,19 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSILKCROWD_STRICT=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build build -j
+        # The failure has to be readable from the job summary too: a compile error is the one
+        # thing you cannot debug from the step list, and the run log is not always reachable.
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            {
+              echo '### Build failed'
+              echo '```'
+              tail -n 120 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: ccache statistics
         run: ccache --show-stats
       - name: Validation suite
@@ -136,7 +148,15 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build build --config Release -j 2
+        run: |
+          cmake --build build --config Release -j 2 *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '### Build failed'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Get-Content build.log -Tail 120 | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            exit 1
+          }
       - name: Validation suite
         run: build/Release/SilkCrowd.exe --validate
       - name: Vulkan diagnostics
@@ -196,7 +216,17 @@ jobs:
             -DVulkan_INCLUDE_DIR="$(brew --prefix vulkan-headers)/include" \
             -DVulkan_LIBRARY="$(brew --prefix vulkan-loader)/lib/libvulkan.dylib"
       - name: Build
-        run: cmake --build build -j
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            {
+              echo '### Build failed'
+              echo '```'
+              tail -n 120 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Validation suite
         run: ./build/SilkCrowd --validate
       - name: Vulkan diagnostics
@@ -248,7 +278,16 @@ jobs:
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
             -DSILKCROWD_WITH_QT=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-ios --config Release -j 2
+          set -o pipefail
+          if ! cmake --build build-ios --config Release -j 2 2>&1 | tee build-ios.log; then
+            {
+              echo '### iOS simulator build failed'
+              echo '```'
+              tail -n 120 build-ios.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Validation suite on the simulator
         run: |
           mkdir -p artifacts
