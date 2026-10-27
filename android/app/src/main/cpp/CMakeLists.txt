@@ -28,9 +28,11 @@ add_library(silkcrowd SHARED
   android_main.cpp
   ${SILKCROWD_ROOT}/src/core/assets.cpp
   ${SILKCROWD_ROOT}/src/core/catmull_rom.cpp
+  ${SILKCROWD_ROOT}/src/core/gltf.cpp
   ${SILKCROWD_ROOT}/src/core/hair_mesh.cpp
   ${SILKCROWD_ROOT}/src/core/hair_mesh_texture.cpp
   ${SILKCROWD_ROOT}/src/core/image.cpp
+  ${SILKCROWD_ROOT}/src/core/image_decode.cpp
   ${SILKCROWD_ROOT}/src/core/lod.cpp
   ${SILKCROWD_ROOT}/src/core/root_placement.cpp
   ${SILKCROWD_ROOT}/src/core/sim.cpp
@@ -41,9 +43,13 @@ add_library(silkcrowd SHARED
   ${SILKCROWD_ROOT}/src/gpu/vulkan_context.cpp
   ${SILKCROWD_ROOT}/src/gpu/hair_gpu_renderer.cpp)
 
+# Same include layout as the desktop target: silkcrowd/*.h from include/, "gpu/..." and
+# "scenes.h" from src/, stb_image from third_party/stb (image_decode.cpp needs it).
 target_include_directories(silkcrowd PRIVATE
   ${SILKCROWD_ROOT}/include
   ${SILKCROWD_ROOT}/src
+  ${SILKCROWD_ROOT}/src/app
+  ${SILKCROWD_ROOT}/third_party/stb
   ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(silkcrowd PRIVATE
   SILKCROWD_WITH_VULKAN=1
